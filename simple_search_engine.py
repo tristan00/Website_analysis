@@ -1,9 +1,10 @@
 import pandas as pd
 import sqlite3
 import pickle
-from common import get_initial_website_list, dir_loc, url_record_file_name, db_name, url_record_backup_file_name, clean_text, index1_db_name
+from common import get_initial_website_list, dir_loc, url_record_file_name, db_name, url_record_backup_file_name, clean_text, index1_db_name, get_distance
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.decomposition import PCA
 from sklearn.preprocessing import QuantileTransformer
 from scipy.spatial.distance import cosine
 import numpy as np
@@ -17,21 +18,26 @@ distance_col4 = 'ranking_column_4'
 
 class SimpleSearchEngine():
 
-    def __init__(self, max_features = 10000, max_df = .5):
+    def __init__(self, max_features = 5000, max_df = .2, max_records_to_fit = 5000):
         self.bow_vectorizer1 = CountVectorizer(max_features = max_features, binary=True, max_df=max_df)
+        self.max_records_to_fit = max_records_to_fit
+        self.decomp = PCA(n_components=100)
 
 
     def get_results(self, query):
         query_clean = clean_text(query)
-        query_vec = self.bow_vectorizer1.transform([query_clean]).toarray()
-        self.kw_df[distance_col3] = cosine(self.kw_df[self.bow_vectorizer1.vocabulary_][0].values, query_vec[0])
+        query_vec = self.bow_vectorizer1.transform([query_clean]).toarray()[0]
 
+        a = self.kw_df.iloc[0][self.bow_vectorizer1.vocabulary_].values
+
+        self.kw_df[distance_col3] = self.kw_df.apply(lambda x: get_distance(x[self.bow_vectorizer1.vocabulary_].values, query_vec), axis = 1)
         self.kw_df[distance_col3] = QuantileTransformer().fit_transform(self.kw_df[distance_col3].values.reshape((-1, 1)))
         self.kw_df[distance_col3] = 1 - self.kw_df[distance_col3]
 
         self.kw_df[distance_col4] = self.kw_df[distance_col3] * self.kw_df[distance_col2]
+        self.kw_df = self.kw_df.sort_values(distance_col4, ascending=False)
         rec = self.kw_df.sort_values(distance_col4, ascending=False).iloc[0]
-        return rec.index[0]
+        return rec.name
 
 
     def fit_engine(self):
@@ -39,7 +45,7 @@ class SimpleSearchEngine():
         self.generate_ranking_index()
 
 
-    def generate_keyword_index(self, max_records_to_fit = 4000):
+    def generate_keyword_index(self):
         #url_record_file_name
         with open('{dir}/{url_record_file_name}'.format(dir=dir_loc, url_record_file_name=url_record_backup_file_name), 'rb') as f:
             links = pickle.load(f)
@@ -50,7 +56,7 @@ class SimpleSearchEngine():
         df = pd.DataFrame.from_dict(list(links.values()))
         df = df[df['scraped'] == 1]
         df = df.sort_values('num_of_links_to', ascending=False)
-        df_top = df[:max_records_to_fit]
+        df_top = df[:self.max_records_to_fit]
 
         with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
             query = '''Select * from websites where url = ?'''
@@ -64,7 +70,7 @@ class SimpleSearchEngine():
             self.bow_vectorizer1.fit(df_top['response'])
             self.kw_df = pd.DataFrame(columns = self.bow_vectorizer1.vocabulary_ )
 
-            for k, v in df.iterrows():
+            for k, v in df_top.iterrows():
                 res = conn_disk.execute(query, (v['url'],))
                 res_list = list(res)
                 if res_list:
@@ -72,7 +78,7 @@ class SimpleSearchEngine():
                     d1 = self.bow_vectorizer1.transform([text]).toarray()
                     new_series = pd.Series(d1[0].astype(np.int8), index = self.bow_vectorizer1.vocabulary_)
                     self.kw_df.loc[v['url']] = new_series
-
+                    print(self.kw_df.shape)
 
 
     def generate_ranking_index(self):
@@ -106,12 +112,13 @@ class SimpleSearchEngine():
                     links[j]['score4'] += links[i]['score3']
 
 
-
-        self.ranking_df = pd.DataFrame.from_dict(list(links.values()))
+        links_list = list(links.values())
+        self.ranking_df = pd.DataFrame.from_dict(links_list)
         scaler = QuantileTransformer()
         self.ranking_df[distance_col2] = scaler.fit_transform(self.ranking_df['score4'].values.reshape((-1, 1)))
         self.ranking_df = self.ranking_df[['url', distance_col2]]
-        self.ranking_df = self.ranking_df.sort_values(distance_col2, ascending=False)
+        self.ranking_df = self.ranking_df.set_index(['url'])
+        self.kw_df = self.kw_df.join(self.ranking_df)
 
         # self.ranking_df.to_csv('res.csv')
 
@@ -120,7 +127,13 @@ class SimpleSearchEngine():
 if __name__ == '__main__':
     s = SimpleSearchEngine()
     s.fit_engine()
-    print(s.get_results('test query testing'))
+
+    tests = ['test query testing',
+             'world of warcraft',
+             'data science']
+
+    for i in tests:
+        print(i, s.get_results(i))
 
 
 

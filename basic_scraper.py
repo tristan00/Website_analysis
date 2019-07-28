@@ -59,12 +59,14 @@ class Crawler():
 
     def load_past_data(self):
         try:
-            with open('{dir}/{file}'.format(dir=self.data_folder_loc, file=url_record_file_name), 'rb') as f:
+            with open('{dir}/{file}'.format(dir=self.data_folder_loc, file=url_record_backup_file_name), 'rb') as f:
                 self.links = pickle.load(f)
             with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='domain_time_delay_record_keeper'), 'rb') as f:
                 self.domain_time_delay_record_keeper = pickle.load(f)
             with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='visited_links'), 'rb') as f:
                 self.visited_links = pickle.load(f)
+            for i in self.visited_links:
+                self.links[i]['scraped'] = 1
         except:
             traceback.print_exc()
             self.links = dict()
@@ -188,12 +190,15 @@ class Crawler():
         for i in website_list:
             self.links[i] = self.generate_link_dict(i)
             self.scrape_url(self.links[i])
+
         self.save_data()
 
     def crawl(self, maximum_sites = 1000000, save_frequency = 100):
         while len(self.visited_links) < maximum_sites:
             sorting_start_time = time.time()
             all_links = list(self.links.values())
+            all_links1 = [i for i in all_links if i['scraped'] == 1]
+            all_links = [i for i in all_links if i['scraped'] == 0]
             random.shuffle(all_links)
             unscraped_links = sorted(all_links, key = lambda x: len(x['urls_linking_to_page']), reverse= True)
             sorting_end_time = time.time()
