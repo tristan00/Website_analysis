@@ -14,39 +14,9 @@ import traceback
 import sqlite3
 import numpy as np
 
-initial_sites = [
-                'https://old.reddit.com/r/findareddit/wiki/directory',
-                'https://en.wikipedia.org/wiki/Main_Page',
-                'https://moz.com/top500',
-                'https://www.alexa.com/topsites',
-                'https://www.similarweb.com/top-websites/united-states',
-                'https://en.wikipedia.org/wiki/List_of_most_popular_websites',
-                'https://www.rankranger.com/top-websites',
-                'https://www.lifewire.com/most-popular-sites-3483140',
-                'https://www.lemonde.fr/',
-                'https://www.bbc.com/',
-                'https://www.foxnews.com/',
-                'https://www.nytimes.com/',
-                'https://www.cnn.com/',
-                'https://www.huffpost.com/',
-                'https://news.yahoo.com/',
-                'https://www.ycombinator.com/',
-                'https://timesofindia.indiatimes.com/',
-                'http://www.chinadaily.com.cn/',
-                'http://www.espn.com/espn/latestnews',
-                'https://www.cbssports.com/',
-                'https://www.independent.co.uk/us',
-                'https://www.apnews.com/',
-                'https://www.wsj.com/',
-                'https://www.news.com.au/',
-                'https://www.zerohedge.com/',
-                'https://www.africanews.com/',
-                'https://tass.com/',
-                'https://www.aljazeera.com/topics/country/russia.html']
+from common import get_initial_website_list, dir_loc, url_record_file_name, db_name, url_record_backup_file_name, is_link_external, is_absolute
 
 
-def is_absolute(url):
-    return bool(parse.urlparse(url).netloc)
 
 
 class Timeout:
@@ -73,16 +43,13 @@ class Crawler():
         self.links = dict()
         self.visited_links = set()
         self.domain_time_delay = domain_time_delay # needed to not tax any domain too much
+        self.data_folder_loc = dir_loc
+        self.load_past_data()
 
-        dir_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-        self.data_folder_loc = os.path.join(dir_path, 'web_data')
-        # self.load_past_data()
-
-        # os.system('rm -rf {0}'.format(self.data_folder_loc))
         os.system('mkdir {0}'.format(self.data_folder_loc))
         self.get_new_session()
 
-        with sqlite3.connect('{dir}/website.db'.format(dir = self.data_folder_loc)) as conn_disk:
+        with sqlite3.connect('{dir}/{db_name}'.format(dir = self.data_folder_loc, db_name=db_name)) as conn_disk:
             conn_disk.execute('''
             CREATE TABLE IF NOT EXISTS websites (
              url TEXT PRIMARY KEY,
@@ -92,7 +59,7 @@ class Crawler():
 
     def load_past_data(self):
         try:
-            with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='links'), 'rb') as f:
+            with open('{dir}/{file}'.format(dir=self.data_folder_loc, file=url_record_file_name), 'rb') as f:
                 self.links = pickle.load(f)
             with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='domain_time_delay_record_keeper'), 'rb') as f:
                 self.domain_time_delay_record_keeper = pickle.load(f)
@@ -103,9 +70,9 @@ class Crawler():
             self.links = dict()
 
     def save_data(self):
-        with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='links'), 'wb') as f:
+        with open('{dir}/{file}'.format(dir=self.data_folder_loc, file=url_record_file_name), 'wb') as f:
             pickle.dump(self.links, f)
-        with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='links_backup'), 'wb') as f:
+        with open('{dir}/{file}'.format(dir=self.data_folder_loc, file=url_record_backup_file_name), 'wb') as f:
             pickle.dump(self.links, f)
 
         with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='domain_time_delay_record_keeper'), 'wb') as f:
@@ -131,9 +98,12 @@ class Crawler():
             record['query'] = parsed_url.query
             record['fragment'] = parsed_url.fragment
             record['page_links'] = []
+            record['page_links'] = []
+            record['page_links'] = []
             record['urls_linking_to_page'] = []
             record['scraped'] = 0
             return record
+
         return self.links[url]
 
 
@@ -144,40 +114,54 @@ class Crawler():
 
     def scrape_url(self, next_link):
         scrape_successful = False
+
+        t1 = time.time()
         self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
         if time.time() - self.domain_time_delay_record_keeper[next_link['netloc']] > self.domain_time_delay and next_link['scraped'] == 0:
+            t2 = time.time()
             try:
                 self.domain_time_delay_record_keeper[next_link['netloc']] = time.time()
                 r_time = np.nan
+                t3 = time.time()
+                print('attempting to scrape: {0}'.format(next_link['url']))
+
                 with Timeout(5):
                     r_start_time = time.time()
                     r = self.s.get(next_link['url'])
                     r_time = time.time() - r_start_time
+                print('received  response from: {0} in {1} seconds'.format(next_link['url'], r_time))
+
                 scrape_successful = True
                 self.visited_links.add(next_link['url'])
+                t4 = time.time()
 
                 soup = BeautifulSoup(r.text)
                 new_links = [i['href'] for i in soup.find_all('a', href=True)]
-                new_abs_links = [i for i in new_links if is_absolute(i)]
-                new_rel_links = [i for i in new_links if not is_absolute(i)]
-                new_rel_links_joined = [parse.urljoin(next_link['url'], i) for i in new_rel_links]
-                new_rel_links_joined = [i for i in new_rel_links_joined if is_absolute(i)]
+                new_abs_links = [i for i in new_links if is_link_external(i, next_link['netloc'])]
+                new_rel_links1 = [i for i in new_links if not is_link_external(i, next_link['netloc']) and is_absolute(i)]
+                new_rel_links2 = [i for i in new_links if not is_link_external(i, next_link['netloc']) and not is_absolute(i)]
 
-                combined_links = new_abs_links + new_rel_links_joined
+                new_rel_links_joined = [parse.urljoin(next_link['url'], i) for i in new_rel_links2]
+
+                combined_links = new_abs_links + new_rel_links_joined + new_rel_links1
                 self.add_list_of_links_to_input(combined_links)
 
                 for i in combined_links:
                     self.links[i]['urls_linking_to_page'].append(next_link['url'])
+                t6 = time.time()
 
+                self.links[next_link['url']]['page_external_links'] = new_abs_links
+                self.links[next_link['url']]['page_internal_links'] = new_rel_links_joined
                 self.links[next_link['url']]['page_links'] = combined_links
                 self.links[next_link['url']]['request_time'] = r_time
 
                 try:
-                    with sqlite3.connect('{dir}/website.db'.format(dir = self.data_folder_loc)) as conn_disk:
+                    with sqlite3.connect('{dir}/{db_name}'.format(dir = self.data_folder_loc, db_name=db_name)) as conn_disk:
                         conn_disk.execute(''' INSERT INTO websites (url, page_text)
                         VALUES(?,?) ''', (next_link['url'], r.text[:self.max_website_len]))
                 except sqlite3.IntegrityError:
                     pass
+                t7 = time.time()
 
 
                 print('''scraped link: {link}, total links scraped: {total_links_scraped}, total time: {total_time}, time per link scraped: {time_per_link_scraped}, links to scrape: {links_to_scrape}'''.format(link=next_link['url'],
@@ -196,35 +180,43 @@ class Crawler():
             except Exception:
                 traceback.print_exc()
         self.links[next_link['url']]['scraped'] = 1 if scrape_successful else 0
+
+
         return scrape_successful
 
     def scrape_list(self, website_list):
         for i in website_list:
             self.links[i] = self.generate_link_dict(i)
             self.scrape_url(self.links[i])
+        self.save_data()
 
-    def crawl(self, maximum_sites = 1000000, save_frequency = 10):
+    def crawl(self, maximum_sites = 1000000, save_frequency = 100):
         while len(self.visited_links) < maximum_sites:
-            next_key = random.choice(list(self.links.keys()))
-            next_link = self.links[next_key]
+            sorting_start_time = time.time()
+            all_links = list(self.links.values())
+            random.shuffle(all_links)
+            unscraped_links = sorted(all_links, key = lambda x: len(x['urls_linking_to_page']), reverse= True)
+            sorting_end_time = time.time()
 
-            current_time = time.time()
-            self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
-            scrape_successful = False
+            print('sorting took {} seconds'.format(sorting_end_time - sorting_start_time))
 
-            if current_time - self.domain_time_delay_record_keeper[next_link['netloc']] > self.domain_time_delay and next_link['url'] not in self.visited_links:
+            for next_link in unscraped_links:
+                self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
                 scrape_successful = self.scrape_url(next_link)
 
-            if not scrape_successful:
-                self.links[next_link['url']] = next_link
-                self.get_new_session()
+                if not scrape_successful:
+                    self.get_new_session()
 
-            if scrape_successful and len(self.visited_links) % save_frequency == 0:
-                self.save_data()
+                if scrape_successful and len(self.visited_links) % save_frequency == 0:
+                    self.save_data()
+
+
+        self.save_data()
 
 
 if __name__ == '__main__':
     c = Crawler()
+    initial_sites = get_initial_website_list()
     c.scrape_list(initial_sites)
     c.crawl()
 
