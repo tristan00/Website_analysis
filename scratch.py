@@ -1,17 +1,26 @@
-import signal
-import time
+import pymongo
+from bson.objectid import ObjectId
 
-class Timeout:
-    def __init__(self, seconds=1, error_message='Timeout'):
-        self.seconds = seconds
-        self.error_message = error_message
-    def handle_timeout(self, signum, frame):
-        raise TimeoutError(self.error_message)
-    def __enter__(self):
-        signal.signal(signal.SIGALRM, self.handle_timeout)
-        signal.alarm(self.seconds)
-    def __exit__(self, type, value, traceback):
-        signal.alarm(0)
 
-with timeout(seconds=3):
-    time.sleep(4)
+connection = pymongo.Connection()
+
+db = connection["tutorial"]
+employees = db["employees"]
+
+employees.insert({"name": "Lucas Hightower", 'gender':'m', 'phone':'520-555-1212', 'age':8})
+
+cursor = db.employees.find()
+for employee in db.employees.find():
+    print employee
+
+
+print employees.find({"name":"Rick Hightower"})[0]
+
+
+cursor = employees.find({"age": {"$lt": 35}})
+for employee in cursor:
+     print "under 35: %s" % employee
+
+
+diana = employees.find_one({"_id":ObjectId("4f984cce72320612f8f432bb")})
+print "Diana %s" % diana

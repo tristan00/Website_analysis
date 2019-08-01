@@ -10,7 +10,8 @@ from bs4 import BeautifulSoup
 
 
 # dir_loc = '/home/td/Documents/web_data'
-dir_loc = '/media/td/Samsung_T5/web_data'
+# dir_loc = '/media/td/Samsung_T5/web_data'
+dir_loc = 'E:/web_data'
 url_record_file_name = 'links.pkl'
 url_record_backup_file_name = 'links_backup.pkl'
 db_name = 'website.db'
@@ -75,8 +76,18 @@ def is_link_external(test_link, net_loc):
 
 
 def extract_meta_information(soup):
-    soup
+    header = soup.find('head')
+    texts = []
 
+    if header:
+        for tag in header.children:
+            try:
+                texts.append(tag.get('content', ''))
+                texts.append(tag.get_text())
+
+            except AttributeError:
+                pass
+    return ' '.join(texts)
 
 def extract_page_text(soup):
     return soup.get_text()

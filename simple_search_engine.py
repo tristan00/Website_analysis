@@ -1,7 +1,7 @@
 import pandas as pd
 import sqlite3
 import pickle
-from common import get_initial_website_list, dir_loc, url_record_file_name, db_name, url_record_backup_file_name, clean_text, index1_db_name, get_distance
+from common import get_initial_website_list, dir_loc, url_record_file_name, db_name, url_record_backup_file_name, clean_text, index1_db_name, get_distance, initial_website_file_name
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import PCA
@@ -41,7 +41,7 @@ class SimpleSearchEngine():
 
 
     def fit_engine(self):
-        self.generate_keyword_index()
+        # self.generate_keyword_index()
         self.generate_ranking_index()
 
 
@@ -117,10 +117,25 @@ class SimpleSearchEngine():
         scaler = QuantileTransformer()
         self.ranking_df[distance_col2] = scaler.fit_transform(self.ranking_df['score4'].values.reshape((-1, 1)))
         self.ranking_df = self.ranking_df[['url', distance_col2]]
-        self.ranking_df = self.ranking_df.set_index(['url'])
-        self.kw_df = self.kw_df.join(self.ranking_df)
+        self.ranking_df = self.ranking_df.sort_values(distance_col2, ascending = False)
 
-        # self.ranking_df.to_csv('res.csv')
+        self.ranking_df = self.ranking_df.set_index(['url'])
+        # self.kw_df = self.kw_df.join(self.ranking_df)
+        self.ranking_df.to_csv('res.csv')
+        top_names = self.ranking_df.index.tolist()[:10000]
+
+        # with open('{dir_loc}/{initial_website_file_name}'.format(dir_loc=dir_loc,
+        #                                                          initial_website_file_name=initial_website_file_name),
+        #           'a') as f:
+        #     for i in top_names:
+        #         try:
+        #             f.write(i)
+        #             f.write('\n')
+        #         except UnicodeEncodeError:
+        #             pass
+
+
+        print(top_names)
 
 
 
