@@ -7,7 +7,8 @@ import string
 from urllib import parse
 import math
 from bs4 import BeautifulSoup
-
+import random
+import tqdm
 
 # dir_loc = '/home/td/Documents/web_data'
 # dir_loc = '/media/td/Samsung_T5/web_data'
@@ -15,6 +16,7 @@ dir_loc = 'E:/web_data'
 url_record_file_name = 'links.pkl'
 url_record_backup_file_name = 'links_backup.pkl'
 db_name = 'website.db'
+db_name2 =  'website2.db'
 index1_db_name = 'index1.db'
 initial_website_file_name = 'web_crawler_input.txt'
 
@@ -22,15 +24,106 @@ translator = str.maketrans(string.punctuation, ' '*len(string.punctuation))
 
 
 class DataManager():
-    def __init__(self):
-        with open('{dir}/{url_record_file_name}'.format(dir=dir_loc, url_record_file_name=url_record_file_name), 'rb') as f:
-            self.links = pickle.load(f)
+    def __init__(self, minimum_query_words = 2, maximum_query_words = 5):
+        query = '''Select url from websites'''
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name2)) as conn_disk:
+            self.urls = list(set([i[0] for i in conn_disk.execute(query)]))
+        self.implemented_query_generation_options = ['random_title_extract', 'random_metas_extract']
+        self.minimum_query_words = minimum_query_words
+        self.maximum_query_words = maximum_query_words
 
-        for i in self.links:
-            self.links[i]['num_of_links_to'] = len(self.links[i]['urls_linking_to_page'])
 
-        self.df = pd.DataFrame.from_dict(list(self.links.values()))
-        self.df = self.df[self.df['scraped'] == 1]
+
+    def extract_possible_query(self, url, title, meta):
+        option = random.choice(self.implemented_query_generation_options)
+        if option == 'random_title_extract':
+            tokenized_title = tokenize(title)
+            if len(tokenized_title) <= self.minimum_query_words:
+                return ' '.join(tokenized_title)
+            else:
+                num_of_words = random.randint(self.minimum_query_words, min(len(tokenized_title), self.maximum_query_words))
+                return ' '.join(random.sample(tokenized_title, k =  num_of_words))
+
+        if option == 'random_metas_extract':
+            tokenized_meta = tokenize(meta)
+            if len(tokenized_meta) <= self.minimum_query_words:
+                return ' '.join(tokenized_meta)
+            else:
+                num_of_words = random.randint(self.minimum_query_words, min(len(tokenized_meta), self.maximum_query_words))
+                return ' '.join(random.sample(tokenized_meta, k =  num_of_words))
+
+    def sample_queries(self, n):
+        urls = random.sample(self.urls, k = n)
+        results = []
+
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name2)) as conn_disk:
+            for url in tqdm.tqdm(urls):
+                (url, meta, title,) = [i for i in conn_disk.execute(
+                    "select url, meta, title from websites where url = '{}' order by request_timestamp DESC".format(
+                        url))][0]
+                results.append(self.extract_possible_query(url, meta, title))
+        return results
+
+    def sample_col(self, n, col):
+        urls = random.sample(self.urls, k = n)
+        results = []
+
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name2)) as conn_disk:
+            for url in tqdm.tqdm(urls):
+                res = [i for i in conn_disk.execute(
+                    "select {0} from websites where url = '{1}' order by request_timestamp DESC".format(col, url))][0]
+                results.append(res[0])
+        return results
+
+    def get_titles(self, n):
+        urls = random.sample(self.urls)
+        results = []
+
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name2)) as conn_disk:
+            for url in urls:
+                url, meta, title = [i for i in conn_disk.execute(
+                    "select url, meta, title from websites where url = '{}' order by request_timestamp DESC".format(
+                        url))][0]
+                results.append(self.extract_possible_query(url, meta, title))
+        return results
+
+    def get_positive(self, conn, url):
+        _, meta, title = [i for i in conn.execute("select url, meta, title from websites where url = '{}' order by request_timestamp DESC".format(url))][0]
+        query = self.extract_possible_query(url, meta, title)
+        return query, url, meta, title
+
+    def get_negative(self, conn, url1, url2 ):
+        _, meta1, title1 = [i for i in conn.execute(
+            "select url, meta, title from websites where url = '{}' order by request_timestamp DESC".format(url1))][0]
+        _, meta2, title2 = [i for i in conn.execute(
+            "select url, meta, title from websites where url = '{}' order by request_timestamp DESC".format(url2))][0]
+        query = self.extract_possible_query(url2, meta2, title2)
+        return query, url1, meta1, title1
+
+
+    def get_sample(self, n):
+        urls_to_consider = random.sample(self.urls, k = n)
+        positives = urls_to_consider[:n//2]
+        negatives = urls_to_consider[n//2:]
+
+        urls_to_sample_negatives_from = [i for i in self.urls if i not in positives and i not in negatives]
+        negative_pages = random.sample(urls_to_sample_negatives_from, k = len(negatives))
+
+        data = []
+
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name2)) as conn_disk:
+            for url in positives:
+                query, _, meta, title = self.get_positive(conn_disk, url)
+                data.append({'query':query, 'meta': meta, 'title':title, 'url':url, 'target':1})
+
+            for url1, url2 in zip(negatives, negative_pages):
+                query, url, meta, title = self.get_negative(conn_disk, url1, url2)
+                data.append({'query':query, 'meta': meta, 'title':title, 'url':url, 'target':0})
+
+        return pd.DataFrame(data)
+
+
+
 
 
 def get_distance(v1, v2):
@@ -63,16 +156,31 @@ def is_https(r):
     return 0
 
 
-def is_link_external(test_link, net_loc):
+def is_link_external(test_url, net_loc):
     '''
 
     :param search_link:
     :param test_link:
     :return:
     '''
-    if is_absolute(test_link):
-        return 1
+
+    allowed_overlaps = ['www', 'net', 'com', 'org', 'gov', 'en']
+
+    split_netloc1 = [i for i in net_loc.split('.') if i not in allowed_overlaps]
+    test_url_netloc = parse.urlparse(test_url).netloc
+
+
+    if test_url_netloc:
+        split_test_url_netloc = [i for i in test_url_netloc.split('.') if i not in allowed_overlaps]
+        if not set(split_test_url_netloc) & set(split_netloc1):
+            return 1
     return 0
+
+def extract_title(soup):
+    title_tag = soup.find('title')
+    if title_tag:
+        return clean_text(title_tag.get_text())
+    return ''
 
 
 def extract_meta_information(soup):
@@ -87,7 +195,7 @@ def extract_meta_information(soup):
 
             except AttributeError:
                 pass
-    return ' '.join(texts)
+    return clean_text(' '.join(texts))
 
 def extract_page_text(soup):
     return soup.get_text()
@@ -173,7 +281,5 @@ def get_adjacency_matrix():
 
 
 if __name__ == '__main__':
-    df = get_data()
-    df = df.sort_values('num_of_links_to')
-    df.shape
+    print(DataManager().sample_queries(10))
 

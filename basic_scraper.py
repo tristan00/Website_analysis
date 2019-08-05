@@ -14,9 +14,12 @@ import sqlite3
 import numpy as np
 import tqdm
 import ast
-from common import get_initial_website_list, dir_loc, url_record_file_name, db_name, url_record_backup_file_name, is_link_external, is_absolute, extract_meta_information, extract_page_text
+from common import dir_loc, db_name, is_link_external, is_absolute, extract_meta_information, extract_page_text, extract_title, get_initial_website_list
+import asyncio
+import aiohttp
 
-web_timeout = (5, 5)
+web_timeout = 5
+ignore_domains = []
 
 
 class Crawler():
@@ -28,6 +31,7 @@ class Crawler():
         self.crawler_id = str(uuid.uuid4())
         self.domain_time_delay_record_keeper = dict()
         self.url_time_delay_record_keeper = dict()
+        self.request_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36',}
 
         self.domains = dict()
         self.visited_links = set()
@@ -43,7 +47,24 @@ class Crawler():
         if self.verbose or force_verbose:
             print(s)
 
-    def run_page_rank(self):
+    def get_n_random_urls(self, n):
+        url_list = []
+        self.visited_links = set()
+        query = '''Select url, page_links from websites'''
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=self.data_folder_loc, db_name=db_name)) as conn_disk:
+            cursor = conn_disk.cursor()
+            res = cursor.execute(query)
+            for res_temp in tqdm.tqdm(res):
+                url_list.extend(ast.literal_eval(res_temp[1]))
+                self.visited_links.add(res_temp[0])
+        url_list = list(set(url_list))
+        print(len(url_list), len(self.visited_links))
+        if len(url_list) > n:
+            return random.sample(url_list, n)
+        return url_list
+
+
+    def run_page_rank(self, num_of_iterations = 1):
         #TODO:  automate stopping condition
         ranking_dict1 = dict()
         ranking_dict2 = dict()
@@ -58,32 +79,32 @@ class Crawler():
                 count += 1
                 ranking_dict1[res_temp[0]] = ast.literal_eval(res_temp[1])
 
+        default_iteration_dict = {'iteration{0}'.format(i): 0 for i in range(num_of_iterations + 1)}
+        default_iteration_dict['iteration0'] = 1
 
-        for i in tqdm.tqdm(ranking_dict1):
-            num_of_links = len(ranking_dict1[i])
-            for j in ranking_dict1[i]:
-                ranking_dict2.setdefault(j, {'url': j,
-                                             'iteration1': 1,
-                                             'iteration2': 0,
-                                             'iteration3': 0,
-                                             'page_rank': 0})
-                ranking_dict2.setdefault(i, {'url': i,
-                                             'iteration1': 1,
-                                             'iteration2': 0,
-                                             'iteration3': 0,
-                                             'page_rank': 0})
+        for iteration in range(num_of_iterations):
+            print('page rank iteration: {}'.format(iteration))
 
-                ranking_dict2[j]['iteration2'] += (ranking_dict2[i]['iteration1']/num_of_links)
-        for i in tqdm.tqdm(ranking_dict1):
-            num_of_links = len(ranking_dict1[i])
-            for j in ranking_dict1[i]:
-                ranking_dict2[j]['iteration3'] += (ranking_dict2[i]['iteration2']/num_of_links)
+            for i in tqdm.tqdm(ranking_dict1):
+                num_of_links = len(ranking_dict1[i]) + 1
+                for j in ranking_dict1[i] + [i]:
+                    if iteration == 0:
+                        ranking_dict_2_default = copy.deepcopy(default_iteration_dict)
+                        ranking_dict_1_default = copy.deepcopy(default_iteration_dict)
+                        ranking_dict_2_default['url'] = j
+                        ranking_dict_1_default['url'] = i
+                        ranking_dict2.setdefault(j, ranking_dict_2_default)
+                        ranking_dict2.setdefault(i, ranking_dict_1_default)
+
+                    ranking_dict2[j]['iteration{}'.format(iteration+1)] += (ranking_dict2[i]['iteration{}'.format(iteration)]/num_of_links)
 
         self.page_rank = pd.DataFrame.from_dict(list(ranking_dict2.values()))
-        self.page_rank['page_rank'] = self.page_rank['iteration3'] / self.page_rank['iteration3'].sum()
+
+        total = self.page_rank['iteration{}'.format(num_of_iterations)].sum()
+        self.page_rank['page_rank'] = self.page_rank['iteration{}'.format(num_of_iterations)] / total
         self.page_rank = self.page_rank.sort_values('page_rank', ascending=False)
         self.page_rank = self.page_rank[['url', 'page_rank']]
-        print(self.page_rank['url'][:10].tolist())
+        print(self.page_rank['url'][:20].tolist())
         print(self.page_rank.shape, len(ranking_dict1))
 
 
@@ -131,54 +152,68 @@ class Crawler():
         return record
 
 
+    async def async_request_url(self, url):
+        timeout = aiohttp.ClientTimeout(total=web_timeout)
+        async with aiohttp.ClientSession(timeout=timeout, headers = self.request_headers) as client:
+            async with client.get(url) as response:
+                content = await response.text()
+                return content, response.status
+
+    def request_url(self, url):
+        loop = asyncio.get_event_loop()
+        task = loop.create_task(self.async_request_url(url))
+        loop.run_until_complete(task)
+        result = task.result()
+        if result is not None:
+            content, status = task.result()
+            if status == 200:
+                return content
+
 
     def scrape_url(self, next_link):
         scrape_successful = False
-
-        t1 = time.time()
         self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
         self.url_time_delay_record_keeper.setdefault(next_link['url'], 0)
+
         if time.time() - self.domain_time_delay_record_keeper[next_link['netloc']] > self.domain_time_delay and time.time() - self.url_time_delay_record_keeper[next_link['url']] > self.url_time_delay:
-            t2 = time.time()
             try:
                 self.domain_time_delay_record_keeper[next_link['netloc']] = time.time()
                 self.url_time_delay_record_keeper[next_link['url']] = time.time()
                 r_time = np.nan
-                t3 = time.time()
                 self.print('attempting to scrape: {0}'.format(next_link['url']))
 
                 r_start_time = time.time()
-                r = self.s.get(next_link['url'], timeout = web_timeout)
-                r_time = time.time() - r_start_time
-                self.print('received  response from: {0} in {1} seconds'.format(next_link['url'], r_time))
+                # r = self.s.get(next_link['url'], timeout = web_timeout)
+                r_text = self.request_url(next_link['url'])
+                if r_text:
+                    r_time = time.time() - r_start_time
+                    self.print('received  response from: {0} in {1} seconds'.format(next_link['url'], r_time), force_verbose=True)
 
-                scrape_successful = True
-                self.visited_links.add(next_link['url'])
-                t4 = time.time()
+                    scrape_successful = True
+                    self.visited_links.add(next_link['url'])
+                    soup = BeautifulSoup(r_text)
+                    new_links = [i['href'] for i in soup.find_all('a', href=True)]
+                    new_abs_links = [i for i in new_links if is_link_external(i, next_link['netloc'])]
+                    new_rel_links1 = [i for i in new_links if not is_link_external(i, next_link['netloc']) and is_absolute(i)]
+                    new_rel_links2 = [i for i in new_links if not is_link_external(i, next_link['netloc']) and not is_absolute(i)]
 
-                soup = BeautifulSoup(r.text)
-                new_links = [i['href'] for i in soup.find_all('a', href=True)]
-                new_abs_links = [i for i in new_links if is_link_external(i, next_link['netloc'])]
-                new_rel_links1 = [i for i in new_links if not is_link_external(i, next_link['netloc']) and is_absolute(i)]
-                new_rel_links2 = [i for i in new_links if not is_link_external(i, next_link['netloc']) and not is_absolute(i)]
+                    new_rel_links_joined = [parse.urljoin(next_link['url'], i) for i in new_rel_links2]
 
-                new_rel_links_joined = [parse.urljoin(next_link['url'], i) for i in new_rel_links2]
-
-                combined_links = new_abs_links + new_rel_links_joined + new_rel_links1
-                record = copy.deepcopy(next_link)
-                record['page_external_links'] = str(new_abs_links)
-                record['page_internal_links'] = str(new_rel_links_joined)
-                record['page_links'] = str(combined_links)
-                record['request_time'] = r_time
-                record['request_timestamp'] = self.url_time_delay_record_keeper[next_link['url']]
-                record['html'] = r.text
-                record['meta'] = extract_meta_information(soup)
-                record['page_text'] = extract_page_text(soup)
-                record_df = pd.DataFrame.from_dict([record])
-                with sqlite3.connect('{dir}/{db_name}'.format(dir = self.data_folder_loc, db_name=db_name)) as conn_disk:
-                    record_df.to_sql('websites', conn_disk, if_exists='append')
-                t7 = time.time()
-
+                    combined_links = new_abs_links + new_rel_links_joined + new_rel_links1
+                    record = copy.deepcopy(next_link)
+                    record['page_external_links'] = str(new_abs_links)
+                    record['page_internal_links'] = str(new_rel_links_joined)
+                    record['page_links'] = str(combined_links)
+                    record['request_time'] = r_time
+                    record['request_timestamp'] = self.url_time_delay_record_keeper[next_link['url']]
+                    record['html'] = r_text
+                    record['meta'] = extract_meta_information(soup)
+                    record['page_text'] = extract_page_text(soup)
+                    record['title'] = extract_title(soup)
+                    record_df = pd.DataFrame.from_dict([record])
+                    record_df = record_df.set_index('url')
+                    with sqlite3.connect('{dir}/{db_name}'.format(dir = self.data_folder_loc, db_name=db_name)) as conn_disk:
+                        record_df.to_sql('websites', conn_disk, if_exists='append', index  = True)
 
             except requests.exceptions.MissingSchema:
                 self.print('invalid url: {0}'.format(next_link['url']))
@@ -189,7 +224,12 @@ class Crawler():
             except TimeoutError:
                 self.print('TimeoutError: {0}'.format(next_link['url']))
             except Exception:
-                self.print(traceback.format_exc())
+                self.print(traceback.format_exc(), force_verbose=False)
+        else:
+            self.print('skipping url {}'.format(next_link['url']), force_verbose=True)
+            return scrape_successful
+        if not scrape_successful:
+            self.print('failed to scrape url {}'.format(next_link['url']), force_verbose=True)
         return scrape_successful
 
     def scrape_list(self, website_list):
@@ -199,32 +239,49 @@ class Crawler():
 
         self.save_data()
 
-    def crawl(self, maximum_sites = 1000000, sample_size = 1000):
+    def crawl(self, maximum_sites = 1000000, sample_size = 1000, prob_of_random_url_choice = .1, randomize_page_rank_polling = True):
         while len(self.visited_links) < maximum_sites:
 
-            print()
-            print('running page rank')
-            print()
-            self.run_page_rank()
-            next_urls = random.choices(self.page_rank['url'], weights = self.page_rank['page_rank'], k = sample_size)
-            next_urls = set(next_urls)
+            if random.random() > prob_of_random_url_choice:
+                self.print('', force_verbose=True)
+                self.print('running page rank', force_verbose=True)
+                self.print('', force_verbose=True)
+                num_page_rank_iterations = 3
+                self.print('using {} iterations'.format(num_page_rank_iterations))
+                self.run_page_rank(num_of_iterations=num_page_rank_iterations)
+                next_urls_set = set()
+                if randomize_page_rank_polling:
+                    while len(next_urls_set) <= min(self.page_rank.shape[0], sample_size):
+                        next_urls = random.choices(self.page_rank['url'], weights = self.page_rank['page_rank'], k = sample_size)
+                        next_urls_set.update(set(next_urls))
+                    next_urls_list = random.sample(list(next_urls_set), k = sample_size)
+                else:
+                    next_urls_list = self.page_rank['url'].tolist()[:sample_size]
+            else:
+                self.print('', force_verbose=True)
+                self.print('running random urls', force_verbose=True)
+                self.print('', force_verbose=True)
+                next_urls_list = list(set(self.get_n_random_urls(sample_size)))
 
-            print('running scrape')
-            print()
-            for next_url in tqdm.tqdm(next_urls):
+            self.print('running scrape', force_verbose=True)
+            self.print('', force_verbose=True)
+            for c, next_url in enumerate(next_urls_list):
                 next_link = self.generate_link_dict(next_url)
                 self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
                 scrape_successful = self.scrape_url(next_link)
 
                 if not scrape_successful:
                     self.get_new_session()
-
+                if c > 0 and c%1000 == 0:
+                    self.save_data()
             self.save_data()
+
 
 if __name__ == '__main__':
     c = Crawler()
     initial_sites = get_initial_website_list()
-    # c.run_page_rank()
     c.scrape_list(initial_sites)
-    c.crawl()
+    # c.crawl(maximum_sites=10000, allow_page_rank=False, sample_size = 10)
+    c.crawl(maximum_sites = 50000, sample_size = 10000, prob_of_random_url_choice = 1.0)
+    c.crawl(sample_size=10000, prob_of_random_url_choice=0.5)
 
