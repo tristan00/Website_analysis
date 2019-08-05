@@ -15,27 +15,19 @@ from keras import models, layers, optimizers, callbacks
 from sklearn.model_selection import train_test_split
 
 class SimpleSearchEngine:
-    def __init__(self, doc2vec_num_of_dim = 8, min_word_len = 4, max_training_documents = 100, starting_alpha = 0.025):
+    def __init__(self, doc2vec_num_of_dim = 16, min_word_len = 4, max_training_documents = 100000):
         self.doc2vec_num_of_dim = doc2vec_num_of_dim
         self.min_word_len = min_word_len
         self.max_training_documents = max_training_documents
         self.model_title = Doc2Vec(size=self.doc2vec_num_of_dim,
-                alpha=starting_alpha,
-                min_alpha=0.00025,
-                min_count=1,
-                dm =1,
+                workers = 6)
+        self.model_description = Doc2Vec(size=self.doc2vec_num_of_dim,
+                workers = 6)
+        self.model_keywords = Doc2Vec(size=self.doc2vec_num_of_dim,
                 workers = 6)
         self.model_meta = Doc2Vec(size=self.doc2vec_num_of_dim,
-                                   alpha=starting_alpha,
-                                   min_alpha=0.00025,
-                                   min_count=1,
-                                   dm=1,
                                    workers=6)
         self.model_query = Doc2Vec(size=self.doc2vec_num_of_dim,
-                                   alpha=starting_alpha,
-                                   min_alpha=0.00025,
-                                   min_count=1,
-                                   dm=1,
                                    workers=6)
         self.main_model = self.get_main_model()
         self.dm = DataManager()
@@ -74,15 +66,20 @@ class SimpleSearchEngine:
         self.fit_title_doc2vec()
         self.fit_meta_doc2vec()
         self.fit_query_doc2vec()
-        data_df = self.dm.get_sample(self.max_training_documents)
+        self.fit_keyword_doc2vec()
+        self.fit_description_doc2vec()
+        data_df = self.dm.get_labeled_data_sample(self.max_training_documents)
         data_df = data_df.sample(frac = 1)
         data_df = data_df.reset_index()
         meta_vec = data_df.apply(lambda x: self.model_meta.infer_vector(tokenize(x['meta'])), axis = 1, result_type = 'expand')
         title_vec = data_df.apply(lambda x: self.model_meta.infer_vector(tokenize(x['title'])), axis = 1, result_type = 'expand')
         query_vec = data_df.apply(lambda x: self.model_meta.infer_vector(tokenize(x['query'])), axis = 1, result_type = 'expand')
+        keyword_vec = data_df.apply(lambda x: self.model_meta.infer_vector(tokenize(x['query'])), axis = 1, result_type = 'expand')
+        description_vec = data_df.apply(lambda x: self.model_meta.infer_vector(tokenize(x['query'])), axis = 1, result_type = 'expand')
+
         target = data_df[['target']]
 
-        x = pd.concat([title_vec, meta_vec, query_vec], axis = 1).values
+        x = pd.concat([title_vec, meta_vec, query_vec, keyword_vec, description_vec], axis = 1).values
         y = target.values
         x_train, x_val, y_train, y_val = train_test_split(x, y)
 
@@ -99,7 +96,7 @@ class SimpleSearchEngine:
 
     def get_main_model(self):
         model = models.Sequential()
-        model.add(layers.Dense(32, input_dim=self.doc2vec_num_of_dim*3, activation='relu'))
+        model.add(layers.Dense(32, input_dim=self.doc2vec_num_of_dim*5, activation='relu'))
         model.add(layers.Dense(32, activation='relu'))
         model.add(layers.Dense(32, activation='relu'))
         model.add(layers.Dense(1, activation='sigmoid'))
@@ -109,14 +106,14 @@ class SimpleSearchEngine:
     def fit_title_doc2vec(self):
         print('starting title doc2vec training')
         start_time = time.time()
-        titles = self.dm.sample_col(self.max_training_documents, 'title')
+        titles = self.dm.sample_titles(self.max_training_documents)
         print('got data: {0}'.format(time.time() - start_time))
         documents = [TaggedDocument(tokenize(doc), [i]) for i, doc in enumerate(titles)]
         self.model_title.build_vocab(documents)
         print('vocab built: {0}'.format(time.time() - start_time))
-        self.model_title.train(documents, total_examples=self.model_title.corpus_count, epochs=1)
+        self.model_title.train(documents, total_examples=self.model_title.corpus_count, epochs=10)
         self.model_title.save('{dir}/{model_name}'.format(dir=dir_loc, model_name='doc2vec_title'))
-        print('title model fit')
+        print('title model fit {}'.format(time.time() - start_time))
         print('')
 
 
@@ -124,16 +121,16 @@ class SimpleSearchEngine:
         print('starting meta doc2vec training')
         start_time = time.time()
 
-        titles = self.dm.sample_col(self.max_training_documents, 'meta')
+        titles = self.dm.sample_metas(self.max_training_documents)
         documents = [TaggedDocument(tokenize(doc), [i]) for i, doc in enumerate(titles)]
         print('got data: {0}'.format(time.time() - start_time))
 
         self.model_meta.build_vocab(documents)
         print('vocab built: {0}'.format(time.time() - start_time))
 
-        self.model_meta.train(documents, total_examples=self.model_meta.corpus_count, epochs=1)
+        self.model_meta.train(documents, total_examples=self.model_meta.corpus_count, epochs=10)
         self.model_meta.save('{dir}/{model_name}'.format(dir=dir_loc, model_name='doc2vec_meta'))
-        print('meta model fit')
+        print('meta model fit {}'.format(time.time() - start_time))
         print('')
 
     def fit_query_doc2vec(self):
@@ -146,10 +143,45 @@ class SimpleSearchEngine:
         self.model_query.build_vocab(documents)
         print('vocab built: {0}'.format(time.time() - start_time))
 
-        self.model_query.train(documents, total_examples=self.model_query.corpus_count, epochs=1)
+        self.model_query.train(documents, total_examples=self.model_query.corpus_count, epochs=10)
 
         self.model_query.save('{dir}/{model_name}'.format(dir=dir_loc, model_name='doc2vec_query'))
-        print('meta model fit')
+        print('query model fit {}'.format(time.time() - start_time))
+
+        print('')
+
+
+    def fit_keyword_doc2vec(self):
+        print('starting keyword doc2vec training')
+        start_time = time.time()
+
+        titles = self.dm.sample_metas(self.max_training_documents)
+        documents = [TaggedDocument(tokenize(doc), [i]) for i, doc in enumerate(titles)]
+        print('got data: {0}'.format(time.time() - start_time))
+
+        self.model_keywords.build_vocab(documents)
+        print('vocab built: {0}'.format(time.time() - start_time))
+
+        self.model_keywords.train(documents, total_examples=self.model_keywords.corpus_count, epochs=10)
+        self.model_keywords.save('{dir}/{model_name}'.format(dir=dir_loc, model_name='doc2vec_keyword'))
+        print('keyword model fit {}'.format(time.time() - start_time))
+        print('')
+
+
+    def fit_description_doc2vec(self):
+        print('starting description doc2vec training')
+        start_time = time.time()
+        queries = self.dm.sample_queries(self.max_training_documents)
+        print('got data: {0}'.format(time.time() - start_time))
+
+        documents = [TaggedDocument(tokenize(doc), [i]) for i, doc in enumerate(queries)]
+        self.model_description.build_vocab(documents)
+        print('vocab built: {0}'.format(time.time() - start_time))
+
+        self.model_description.train(documents, total_examples=self.model_description.corpus_count, epochs=10)
+
+        self.model_description.save('{dir}/{model_name}'.format(dir=dir_loc, model_name='doc2vec_query'))
+        print('description model fit {}'.format(time.time() - start_time))
 
         print('')
 

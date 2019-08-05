@@ -14,17 +14,120 @@ import sqlite3
 import numpy as np
 import tqdm
 import ast
-from common import dir_loc, db_name, is_link_external, is_absolute, extract_meta_information, extract_page_text, extract_title, get_initial_website_list
+from common import dir_loc, db_name, is_link_external, is_absolute, extract_meta_information, extract_page_text, extract_title, get_initial_website_list, extract_keywords, extract_description
 import asyncio
 import aiohttp
+import multiprocessing
 
 web_timeout = 5
 ignore_domains = []
 
 
+def request_html(url):
+    s = requests.Session()
+    s.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36',}
+    s.get(url)
+
+
+def generate_link_dict(url):
+    parsed_url = parse.urlparse(url)
+    record = dict()
+    record['url'] = url
+    record['scheme'] = parsed_url.scheme
+    record['netloc'] = parsed_url.netloc
+    record['path'] = parsed_url.path
+    record['params'] = parsed_url.params
+    record['query'] = parsed_url.query
+    record['fragment'] = parsed_url.fragment
+    record['scraped'] = 0
+    record['timestamp_last_scraped'] = 0
+    return record
+
+
+def process_html(r_text, r_time, url):
+    if r_text:
+        record = generate_link_dict(url)
+
+        # print('received  response from: {0} in {1} seconds'.format(url, r_time))
+
+        scrape_successful = True
+        soup = BeautifulSoup(r_text)
+        new_links = [i['href'] for i in soup.find_all('a', href=True)]
+        new_abs_links = [i for i in new_links if is_link_external(i, record['netloc'])]
+        new_rel_links1 = [i for i in new_links if not is_link_external(i, record['netloc']) and is_absolute(i)]
+        new_rel_links2 = [i for i in new_links if not is_link_external(i, record['netloc']) and not is_absolute(i)]
+
+        new_rel_links_joined = [parse.urljoin(url, i) for i in new_rel_links2]
+
+        combined_links = new_abs_links + new_rel_links_joined + new_rel_links1
+        record['page_external_links'] = str(new_abs_links)
+        record['page_internal_links'] = str(new_rel_links_joined)
+        record['page_links'] = str(combined_links)
+        record['request_time'] = r_time
+        record['request_timestamp'] = time.time()
+        record['html'] = r_text
+        record['meta'] = extract_meta_information(soup)
+        record['page_text'] = extract_page_text(soup)
+        record['title'] = extract_title(soup)
+        record['keywords'] = extract_keywords(soup)
+        record['description'] = extract_description(soup)
+
+
+        record_df = pd.DataFrame.from_dict([record])
+        record_df = record_df.set_index('url')
+        with sqlite3.connect('{dir}/{db_name}'.format(dir = dir_loc, db_name=db_name)) as conn_disk:
+            record_df.to_sql('websites', conn_disk, if_exists='append', index  = True)
+
+
+def scrape_url(url):
+    try:
+        s = requests.Session()
+        s.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36',}
+        start_time = time.time()
+
+        r = s.get(url, timeout = (5, 5))
+        t2 = time.time()
+        if r.status_code == 200:
+            process_html(r.text, t2- start_time, url)
+            # print('processed {}'.format(url))
+    except requests.exceptions.MissingSchema:
+        pass
+        # print('invalid url: {0}'.format(url))
+    except requests.exceptions.InvalidSchema:
+        pass
+        # print('invalid url: {0}'.format(url))
+    except requests.exceptions.ConnectionError:
+        pass
+        # print('ConnectionError: {0}'.format(url))
+    except TimeoutError:
+        pass
+        # print('TimeoutError: {0}'.format(url))
+    except Exception:
+        pass
+        # print(traceback.format_exc())
+
+
+def process_urls(q):
+    while True:
+        url = q.get()
+
+        if url:
+            scrape_url(url)
+        else:
+            break
+
+
+def make_queue_and_pool(num_of_p=20):
+    q = multiprocessing.Queue()
+    pool = [multiprocessing.Process(target=process_urls, args=(q, )) for _ in range(num_of_p)]
+    [p.start() for p in pool]
+    return pool, q
+
+
+
 class Crawler():
 
-    def __init__(self, domain_time_delay = 3600, url_time_delay = 2419200, max_website_len = 500000, verbose = False):
+    def __init__(self, domain_time_delay = 3600, url_time_delay = 2419200, max_website_len = 500000, verbose = False, q = None):
         self.max_website_len = max_website_len
         self.verbose = verbose
         self.start_time = time.time()
@@ -32,6 +135,7 @@ class Crawler():
         self.domain_time_delay_record_keeper = dict()
         self.url_time_delay_record_keeper = dict()
         self.request_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36',}
+        self.q = q
 
         self.domains = dict()
         self.visited_links = set()
@@ -42,6 +146,7 @@ class Crawler():
 
         os.system('mkdir {0}'.format(self.data_folder_loc))
         self.get_new_session()
+
 
     def print(self, s, force_verbose = False):
         if self.verbose or force_verbose:
@@ -122,14 +227,14 @@ class Crawler():
             traceback.print_exc()
 
     def save_data(self):
-        print('starting to save data')
+        # print('starting to save data')
         with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='domain_time_delay_record_keeper'), 'wb') as f:
             pickle.dump(self.domain_time_delay_record_keeper, f)
         with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='url_time_delay_record_keeper'), 'wb') as f:
             pickle.dump(self.url_time_delay_record_keeper, f)
         with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='visited_links'), 'wb') as f:
             pickle.dump(self.visited_links, f)
-        print('data saved')
+        # print('data saved')
 
 
     def get_new_session(self):
@@ -152,68 +257,17 @@ class Crawler():
         return record
 
 
-    async def async_request_url(self, url):
-        timeout = aiohttp.ClientTimeout(total=web_timeout)
-        async with aiohttp.ClientSession(timeout=timeout, headers = self.request_headers) as client:
-            async with client.get(url) as response:
-                content = await response.text()
-                return content, response.status
-
-    def request_url(self, url):
-        loop = asyncio.get_event_loop()
-        task = loop.create_task(self.async_request_url(url))
-        loop.run_until_complete(task)
-        result = task.result()
-        if result is not None:
-            content, status = task.result()
-            if status == 200:
-                return content
-
-
     def scrape_url(self, next_link):
         scrape_successful = False
         self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
         self.url_time_delay_record_keeper.setdefault(next_link['url'], 0)
 
-        if time.time() - self.domain_time_delay_record_keeper[next_link['netloc']] > self.domain_time_delay and time.time() - self.url_time_delay_record_keeper[next_link['url']] > self.url_time_delay:
+        if next_link['url'] and time.time() - self.domain_time_delay_record_keeper[next_link['netloc']] > self.domain_time_delay and time.time() - self.url_time_delay_record_keeper[next_link['url']] > self.url_time_delay:
             try:
                 self.domain_time_delay_record_keeper[next_link['netloc']] = time.time()
                 self.url_time_delay_record_keeper[next_link['url']] = time.time()
-                r_time = np.nan
-                self.print('attempting to scrape: {0}'.format(next_link['url']))
-
-                r_start_time = time.time()
-                # r = self.s.get(next_link['url'], timeout = web_timeout)
-                r_text = self.request_url(next_link['url'])
-                if r_text:
-                    r_time = time.time() - r_start_time
-                    self.print('received  response from: {0} in {1} seconds'.format(next_link['url'], r_time), force_verbose=True)
-
-                    scrape_successful = True
-                    self.visited_links.add(next_link['url'])
-                    soup = BeautifulSoup(r_text)
-                    new_links = [i['href'] for i in soup.find_all('a', href=True)]
-                    new_abs_links = [i for i in new_links if is_link_external(i, next_link['netloc'])]
-                    new_rel_links1 = [i for i in new_links if not is_link_external(i, next_link['netloc']) and is_absolute(i)]
-                    new_rel_links2 = [i for i in new_links if not is_link_external(i, next_link['netloc']) and not is_absolute(i)]
-
-                    new_rel_links_joined = [parse.urljoin(next_link['url'], i) for i in new_rel_links2]
-
-                    combined_links = new_abs_links + new_rel_links_joined + new_rel_links1
-                    record = copy.deepcopy(next_link)
-                    record['page_external_links'] = str(new_abs_links)
-                    record['page_internal_links'] = str(new_rel_links_joined)
-                    record['page_links'] = str(combined_links)
-                    record['request_time'] = r_time
-                    record['request_timestamp'] = self.url_time_delay_record_keeper[next_link['url']]
-                    record['html'] = r_text
-                    record['meta'] = extract_meta_information(soup)
-                    record['page_text'] = extract_page_text(soup)
-                    record['title'] = extract_title(soup)
-                    record_df = pd.DataFrame.from_dict([record])
-                    record_df = record_df.set_index('url')
-                    with sqlite3.connect('{dir}/{db_name}'.format(dir = self.data_folder_loc, db_name=db_name)) as conn_disk:
-                        record_df.to_sql('websites', conn_disk, if_exists='append', index  = True)
+                self.q.put(next_link['url'])
+                scrape_successful = True
 
             except requests.exceptions.MissingSchema:
                 self.print('invalid url: {0}'.format(next_link['url']))
@@ -225,17 +279,16 @@ class Crawler():
                 self.print('TimeoutError: {0}'.format(next_link['url']))
             except Exception:
                 self.print(traceback.format_exc(), force_verbose=False)
-        else:
-            self.print('skipping url {}'.format(next_link['url']), force_verbose=True)
-            return scrape_successful
-        if not scrape_successful:
-            self.print('failed to scrape url {}'.format(next_link['url']), force_verbose=True)
+        # else:
+        #     self.print('skipping url {}'.format(next_link['url']), force_verbose=True)
         return scrape_successful
 
     def scrape_list(self, website_list):
-        for i in website_list:
+        for c, i in enumerate(website_list):
             rec = self.generate_link_dict(i)
             self.scrape_url(rec)
+            if c > 0 and c % 100 == 0:
+                self.save_data()
 
         self.save_data()
 
@@ -278,10 +331,20 @@ class Crawler():
 
 
 if __name__ == '__main__':
-    c = Crawler()
-    initial_sites = get_initial_website_list()
-    c.scrape_list(initial_sites)
-    # c.crawl(maximum_sites=10000, allow_page_rank=False, sample_size = 10)
-    c.crawl(maximum_sites = 50000, sample_size = 10000, prob_of_random_url_choice = 1.0)
-    c.crawl(sample_size=10000, prob_of_random_url_choice=0.5)
+    num_of_p = 20
+    pool, q = make_queue_and_pool(num_of_p=num_of_p)
+    c = Crawler(q=q)
+    while True:
+        print('here')
+
+        initial_sites = get_initial_website_list()
+        initial_sites2 = random.sample(initial_sites, k = 1000)
+        c.scrape_list(initial_sites2)
+        [q.put(None) for i in range(num_of_p)]
+        [p.join() for p in pool]
+        del pool
+        del q
+        pool, q = make_queue_and_pool(num_of_p=num_of_p)
+        c.q = q
+
 
