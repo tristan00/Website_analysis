@@ -1,26 +1,47 @@
-import pymongo
-from bson.objectid import ObjectId
+from gensim.models.keyedvectors import KeyedVectors
+import gensim
+import os
+import shutil
+import hashlib
+from sys import platform
 
 
-connection = pymongo.Connection()
-
-db = connection["tutorial"]
-employees = db["employees"]
-
-employees.insert({"name": "Lucas Hightower", 'gender':'m', 'phone':'520-555-1212', 'age':8})
-
-cursor = db.employees.find()
-for employee in db.employees.find():
-    print employee
+def getFileLineNums(filename):
+    f = open(filename, 'r')
+    count = 0
+    for line in f:
+        count += 1
+    return count
 
 
-print employees.find({"name":"Rick Hightower"})[0]
+def prepend_line(infile, outfile, line):
+    with open(infile, 'r') as old:
+        with open(outfile, 'w') as new:
+            new.write(str(line) + "\n")
+            shutil.copyfileobj(old, new)
+
+def prepend_slow(infile, outfile, line):
+    with open(infile, 'r') as fin:
+        with open(outfile, 'w') as fout:
+            fout.write(line + "\n")
+            for line in fin:
+                fout.write(line)
+
+def load(filename):
+    num_lines = getFileLineNums(filename)
+    gensim_file = 'glove_model.txt'
+    gensim_first_line = "{} {}".format(num_lines, 300)
+    # Prepends the line.
+    if platform == "linux" or platform == "linux2":
+        prepend_line(filename, gensim_file, gensim_first_line)
+    else:
+        prepend_slow(filename, gensim_file, gensim_first_line)
+
+    model = gensim.models.KeyedVectors.load_word2vec_format(gensim_file)
+    return model
+model = load("/home/td/Downloads/glove.840B.300d.txt")
 
 
-cursor = employees.find({"age": {"$lt": 35}})
-for employee in cursor:
-     print "under 35: %s" % employee
-
-
-diana = employees.find_one({"_id":ObjectId("4f984cce72320612f8f432bb")})
-print "Diana %s" % diana
+print('deliveries', 'delivery', model.similarity('deliveries', 'delivery'))
+print('restaurant', 'delivery', model.similarity('restaurant', 'delivery'))
+print('hospital', 'delivery', model.similarity('hospital', 'delivery'))

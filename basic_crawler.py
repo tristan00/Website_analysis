@@ -21,12 +21,12 @@ import multiprocessing
 
 web_timeout = 5
 ignore_domains = []
-
+max_page_size = 10000000
 
 def request_html(url):
     s = requests.Session()
     s.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36',}
-    s.get(url)
+    s.get(url, allow_redirects=False)
 
 
 def generate_link_dict(url):
@@ -45,38 +45,39 @@ def generate_link_dict(url):
 
 
 def process_html(r_text, r_time, url):
-    if r_text:
+    if r_text and len(r_text) <= max_page_size:
         record = generate_link_dict(url)
 
         # print('received  response from: {0} in {1} seconds'.format(url, r_time))
 
         scrape_successful = True
-        soup = BeautifulSoup(r_text)
+        soup = BeautifulSoup(r_text, 'lxml')
         new_links = [i['href'] for i in soup.find_all('a', href=True)]
-        new_abs_links = [i for i in new_links if is_link_external(i, record['netloc'])]
-        new_rel_links1 = [i for i in new_links if not is_link_external(i, record['netloc']) and is_absolute(i)]
-        new_rel_links2 = [i for i in new_links if not is_link_external(i, record['netloc']) and not is_absolute(i)]
+        if new_links:
+            new_abs_links = [i for i in new_links if is_link_external(i, record['netloc'])]
+            new_rel_links1 = [i for i in new_links if not is_link_external(i, record['netloc']) and is_absolute(i)]
+            new_rel_links2 = [i for i in new_links if not is_link_external(i, record['netloc']) and not is_absolute(i)]
 
-        new_rel_links_joined = [parse.urljoin(url, i) for i in new_rel_links2]
+            new_rel_links_joined = [parse.urljoin(url, i) for i in new_rel_links2]
 
-        combined_links = new_abs_links + new_rel_links_joined + new_rel_links1
-        record['page_external_links'] = str(new_abs_links)
-        record['page_internal_links'] = str(new_rel_links_joined)
-        record['page_links'] = str(combined_links)
-        record['request_time'] = r_time
-        record['request_timestamp'] = time.time()
-        record['html'] = r_text
-        record['meta'] = extract_meta_information(soup)
-        record['page_text'] = extract_page_text(soup)
-        record['title'] = extract_title(soup)
-        record['keywords'] = extract_keywords(soup)
-        record['description'] = extract_description(soup)
+            combined_links = new_abs_links + new_rel_links_joined + new_rel_links1
+            record['page_external_links'] = str(new_abs_links)
+            record['page_internal_links'] = str(new_rel_links_joined)
+            record['page_links'] = str(combined_links)
+            record['request_time'] = r_time
+            record['request_timestamp'] = time.time()
+            record['html'] = r_text
+            record['meta'] = extract_meta_information(soup)
+            record['page_text'] = extract_page_text(soup)
+            record['title'] = extract_title(soup)
+            record['keywords'] = extract_keywords(soup)
+            record['description'] = extract_description(soup)
 
+            record_df = pd.DataFrame.from_dict([record])
+            record_df = record_df.set_index('url')
 
-        record_df = pd.DataFrame.from_dict([record])
-        record_df = record_df.set_index('url')
-        with sqlite3.connect('{dir}/{db_name}'.format(dir = dir_loc, db_name=db_name)) as conn_disk:
-            record_df.to_sql('websites', conn_disk, if_exists='append', index  = True)
+            with sqlite3.connect('{dir}/{db_name}'.format(dir = dir_loc, db_name=db_name)) as conn_disk:
+                record_df.to_sql('websites', conn_disk, if_exists='append', index  = True)
 
 
 def scrape_url(url):
@@ -85,7 +86,7 @@ def scrape_url(url):
         s.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36',}
         start_time = time.time()
 
-        r = s.get(url, timeout = (5, 5))
+        r = s.get(url, timeout = (5, 5), allow_redirects=True)
         t2 = time.time()
         if r.status_code == 200:
             process_html(r.text, t2- start_time, url)
@@ -117,17 +118,10 @@ def process_urls(q):
             break
 
 
-def make_queue_and_pool(num_of_p=20):
-    q = multiprocessing.Queue()
-    pool = [multiprocessing.Process(target=process_urls, args=(q, )) for _ in range(num_of_p)]
-    [p.start() for p in pool]
-    return pool, q
-
-
-
 class Crawler():
 
-    def __init__(self, domain_time_delay = 3600, url_time_delay = 2419200, max_website_len = 500000, verbose = False, q = None):
+    def __init__(self, domain_time_delay = 3600, url_time_delay = 2419200, max_website_len = 500000, verbose = False, num_of_processes = 30):
+        self.num_of_processes = num_of_processes
         self.max_website_len = max_website_len
         self.verbose = verbose
         self.start_time = time.time()
@@ -135,7 +129,6 @@ class Crawler():
         self.domain_time_delay_record_keeper = dict()
         self.url_time_delay_record_keeper = dict()
         self.request_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36',}
-        self.q = q
 
         self.domains = dict()
         self.visited_links = set()
@@ -146,6 +139,20 @@ class Crawler():
 
         os.system('mkdir {0}'.format(self.data_folder_loc))
         self.get_new_session()
+        self.make_queue_and_pool()
+
+
+    def make_queue_and_pool(self):
+        self.q = multiprocessing.Queue()
+        self.pool = [multiprocessing.Process(target=process_urls, args=(self.q, )) for _ in range(self.num_of_processes)]
+        [p.start() for p in self.pool]
+
+
+    def refresh_pool_and_queue(self):
+        [self.q.put(None) for _ in range(self.num_of_processes)]
+        [p.join() for p in self.pool]
+        del self.pool, self.q
+        self.make_queue_and_pool()
 
 
     def print(self, s, force_verbose = False):
@@ -287,64 +294,54 @@ class Crawler():
         for c, i in enumerate(website_list):
             rec = self.generate_link_dict(i)
             self.scrape_url(rec)
-            if c > 0 and c % 100 == 0:
-                self.save_data()
 
         self.save_data()
+        self.refresh_pool_and_queue()
 
-    def crawl(self, maximum_sites = 1000000, sample_size = 1000, prob_of_random_url_choice = .1, randomize_page_rank_polling = True):
-        while len(self.visited_links) < maximum_sites:
+    def crawl(self, batch_size = 1000, prob_of_random_url_choice = .1, randomize_page_rank_polling = True, num_of_batches = 10, num_page_rank_iterations = 5):
+        for batch in range(num_of_batches):
 
             if random.random() > prob_of_random_url_choice:
                 self.print('', force_verbose=True)
                 self.print('running page rank', force_verbose=True)
                 self.print('', force_verbose=True)
-                num_page_rank_iterations = 3
                 self.print('using {} iterations'.format(num_page_rank_iterations))
                 self.run_page_rank(num_of_iterations=num_page_rank_iterations)
                 next_urls_set = set()
                 if randomize_page_rank_polling:
-                    while len(next_urls_set) <= min(self.page_rank.shape[0], sample_size):
-                        next_urls = random.choices(self.page_rank['url'], weights = self.page_rank['page_rank'], k = sample_size)
+                    while len(next_urls_set) <= min(self.page_rank.shape[0], batch_size):
+                        next_urls = random.choices(self.page_rank['url'], weights = self.page_rank['page_rank'], k = batch_size)
                         next_urls_set.update(set(next_urls))
-                    next_urls_list = random.sample(list(next_urls_set), k = sample_size)
+                    next_urls_list = random.sample(list(next_urls_set), k = batch_size)
                 else:
-                    next_urls_list = self.page_rank['url'].tolist()[:sample_size]
+                    next_urls_list = self.page_rank['url'].tolist()[:batch_size]
             else:
                 self.print('', force_verbose=True)
                 self.print('running random urls', force_verbose=True)
                 self.print('', force_verbose=True)
-                next_urls_list = list(set(self.get_n_random_urls(sample_size)))
+                next_urls_list = list(set(self.get_n_random_urls(batch_size)))
 
             self.print('running scrape', force_verbose=True)
             self.print('', force_verbose=True)
             for c, next_url in enumerate(next_urls_list):
                 next_link = self.generate_link_dict(next_url)
                 self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
-                scrape_successful = self.scrape_url(next_link)
+                self.scrape_url(next_link)
 
-                if not scrape_successful:
-                    self.get_new_session()
-                if c > 0 and c%1000 == 0:
-                    self.save_data()
             self.save_data()
+            self.refresh_pool_and_queue()
 
 
 if __name__ == '__main__':
-    num_of_p = 20
-    pool, q = make_queue_and_pool(num_of_p=num_of_p)
-    c = Crawler(q=q)
+    c = Crawler()
     while True:
         print('here')
 
-        initial_sites = get_initial_website_list()
-        initial_sites2 = random.sample(initial_sites, k = 1000)
-        c.scrape_list(initial_sites2)
-        [q.put(None) for i in range(num_of_p)]
-        [p.join() for p in pool]
-        del pool
-        del q
-        pool, q = make_queue_and_pool(num_of_p=num_of_p)
-        c.q = q
+        # initial_sites = get_initial_website_list()
+        # initial_sites2 = random.sample(initial_sites, k = 1000000)
+        # c.scrape_list(initial_sites2)
+        c.crawl(num_of_batches=1, batch_size=100000, prob_of_random_url_choice=0.0)
+        c.crawl(num_of_batches=1, batch_size=100000, prob_of_random_url_choice=1.0)
+
 
 

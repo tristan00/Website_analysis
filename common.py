@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 import random
 import tqdm
 import glob
+import traceback
 
 # dir_loc = '/home/td/Documents/web_data'
 dir_loc = '/media/td/Samsung_T5/web_data'
@@ -26,23 +27,18 @@ translator = str.maketrans(string.punctuation, ' '*len(string.punctuation))
 
 class DataManager():
     def __init__(self, minimum_query_words = 2, maximum_query_words = 5):
-        query = '''Select url, title, meta, keywords, description from websites'''
-        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
+        query = '''Select url, title, page_text from websites limit 160000'''
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name2)) as conn_disk:
             self.urls = set()
             self.titles = set()
-            self.metas = set()
-            self.keywords = set()
-            self.descriptions = set()
+            self.page_text = set()
 
             res = conn_disk.execute(query)
-            for i in res:
+            for i in tqdm.tqdm(res):
                 self.urls.add(i[0])
                 self.titles.add(i[1])
-                self.metas.add(i[2])
-                self.keywords.add(i[3])
-                self.descriptions.add(i[4])
+                self.page_text.add(i[2])
             self.queries = set()
-        self.implemented_query_generation_options = ['random_title_extract', 'random_metas_extract']
         self.minimum_query_words = minimum_query_words
         self.maximum_query_words = maximum_query_words
         self.search_query_dataset = dict()
@@ -91,31 +87,24 @@ class DataManager():
         return random.sample(self.titles, k = min(n, len(self.titles)))
 
 
-    def sample_metas(self, n):
-        return random.sample(self.metas, k = min(n, len(self.metas)))
+    def sample_page_text(self, n):
+        return random.sample(self.page_text, k = min(n, len(self.page_text)))
 
-
-    def sample_keywords(self, n):
-        return random.sample(self.titles, k = min(n, len(self.keywords)))
-
-
-    def sample_descriptions(self, n):
-        return random.sample(self.metas, k = min(n, len(self.descriptions)))
 
 
     def get_positive_data_point(self, url, conn):
         query = self.extract_query_using_aol_dataset(url)
-        _, meta, title = [i for i in conn.execute(
-            "select url, meta, title from websites where url = '{}' order by request_timestamp DESC".format(url))][0]
-        return query, url, meta, title
+        _, meta, title, page_text = [i for i in conn.execute(
+            "select url, meta, title, page_text from websites where url = '{}' order by request_timestamp DESC".format(url))][0]
+        return query, url, meta, title, page_text
 
     def get_negative_data_point(self, conn, url1, url2 ):
-        _, meta1, title1 = [i for i in conn.execute(
-            "select url, meta, title from websites where url = '{}' order by request_timestamp DESC".format(url1))][0]
-        _, meta2, title2 = [i for i in conn.execute(
-            "select url, meta, title from websites where url = '{}' order by request_timestamp DESC".format(url2))][0]
+        _, meta1, title1, page_text1 = [i for i in conn.execute(
+            "select url, meta, title, page_text from websites where url = '{}' order by request_timestamp DESC".format(url1))][0]
+        _, meta2, title2, page_text2 = [i for i in conn.execute(
+            "select url, meta, title, page_text from websites where url = '{}' order by request_timestamp DESC".format(url2))][0]
         query = self.extract_query_using_aol_dataset(url2)
-        return query, url1, meta1, title1
+        return query, url1, meta1, title1, page_text1
 
 
     def get_labeled_data_sample(self, n):
@@ -130,14 +119,22 @@ class DataManager():
 
         data = []
 
-        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
-            for url in positives:
-                query, _, meta, title = self.get_positive_data_point(url, conn_disk)
-                data.append({'query':query, 'meta': meta, 'title':title, 'url':url, 'target':1})
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name2)) as conn_disk:
+            print('positives')
+            for url in tqdm.tqdm(positives):
+                try:
+                    query, _, meta, title, page_text = self.get_positive_data_point(url, conn_disk)
+                    data.append({'query':query, 'page_text': page_text, 'title':title, 'url':url, 'target':1})
+                except:
+                    traceback.print_exc()
 
-            for url1, url2 in zip(negatives, negative_pages):
-                query, url, meta, title = self.get_negative_data_point(conn_disk, url1, url2)
-                data.append({'query':query, 'meta': meta, 'title':title, 'url':url, 'target':0})
+            print('negatives')
+            for url1, url2 in tqdm.tqdm(zip(negatives, negative_pages)):
+                try:
+                    query, url, meta, title, page_text = self.get_negative_data_point(conn_disk, url1, url2)
+                    data.append({'query':query, 'page_text': page_text, 'title':title, 'url':url, 'target':0})
+                except:
+                    traceback.print_exc()
 
         return pd.DataFrame(data)
 
