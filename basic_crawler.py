@@ -176,7 +176,7 @@ class Crawler():
         return url_list
 
 
-    def run_page_rank(self, num_of_iterations = 1):
+    def run_page_rank(self, n, num_of_iterations = 1):
         #TODO:  automate stopping condition
         ranking_dict1 = dict()
         ranking_dict2 = dict()
@@ -218,6 +218,7 @@ class Crawler():
         self.page_rank = self.page_rank[['url', 'page_rank']]
         print(self.page_rank['url'][:20].tolist())
         print(self.page_rank.shape, len(ranking_dict1))
+        return self.page_rank['url'][:n].tolist()
 
 
     def load_past_data(self):
@@ -306,15 +307,16 @@ class Crawler():
                 self.print('running page rank', force_verbose=True)
                 self.print('', force_verbose=True)
                 self.print('using {} iterations'.format(num_page_rank_iterations))
-                self.run_page_rank(num_of_iterations=num_page_rank_iterations)
-                next_urls_set = set()
-                if randomize_page_rank_polling:
-                    while len(next_urls_set) <= min(self.page_rank.shape[0], batch_size):
-                        next_urls = random.choices(self.page_rank['url'], weights = self.page_rank['page_rank'], k = batch_size)
-                        next_urls_set.update(set(next_urls))
-                    next_urls_list = random.sample(list(next_urls_set), k = batch_size)
-                else:
-                    next_urls_list = self.page_rank['url'].tolist()[:batch_size]
+                next_urls_list = self.run_page_rank(batch_size, num_of_iterations=num_page_rank_iterations)
+                # self.run_page_rank(num_of_iterations=num_page_rank_iterations)
+                # next_urls_set = set()
+                # if randomize_page_rank_polling:
+                #     while len(next_urls_set) <= min(self.page_rank.shape[0], batch_size):
+                #         next_urls = random.choices(self.page_rank['url'], weights = self.page_rank['page_rank'], k = batch_size)
+                #         next_urls_set.update(set(next_urls))
+                #     next_urls_list = random.sample(list(next_urls_set), k = batch_size)
+                # else:
+                #     next_urls_list = self.page_rank['url'].tolist()[:batch_size]
             else:
                 self.print('', force_verbose=True)
                 self.print('running random urls', force_verbose=True)
@@ -340,8 +342,8 @@ if __name__ == '__main__':
         # initial_sites = get_initial_website_list()
         # initial_sites2 = random.sample(initial_sites, k = 1000000)
         # c.scrape_list(initial_sites2)
+        c.crawl(num_of_batches=1, batch_size=10000000, prob_of_random_url_choice=1.0)
         c.crawl(num_of_batches=1, batch_size=100000, prob_of_random_url_choice=0.0)
-        c.crawl(num_of_batches=1, batch_size=100000, prob_of_random_url_choice=1.0)
 
 
 

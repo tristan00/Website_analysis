@@ -265,25 +265,16 @@ def process_saved_data():
 
 
 
-def get_data():
-    with open('{dir}/{url_record_file_name}'.format(dir=dir_loc, url_record_file_name=url_record_file_name), 'rb') as f:
-        links = pickle.load(f)
+def get_data(n):
 
-    for i in links:
-        links[i]['num_of_links_to'] = len(links[i]['urls_linking_to_page'])
-
-    df = pd.DataFrame.from_dict(list(links.values()))
-    df = df[df['scraped'] == 1]
-
+    df = pd.DataFrame(columns=['url', 'page_text, path, params, query, fragment', 'scheme'])
     with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
-        query = '''Select * from websites where url = ?'''
+        query = '''Select url, page_text, path, params, query, fragment, scheme from websites limit {}'''.format(n)
 
-        for k, v in df.iterrows():
-            res = conn_disk.execute(query, (v['url'],))
-            res_list = list(res)
-            if res_list:
-                df.loc[df['url'] == v['url'], 'response'] = res_list[0][1]
-    df = df.dropna(subset=['response'])
+        res = conn_disk.execute(query)
+        for i in tqdm.tqdm(res):
+            df = df.append(pd.Series({'url':i[0], 'page_text':i[1], 'path':i[2], 'params':i[3], 'query':i[4], 'fragment':i[5], 'scheme':i[6]}), ignore_index=True)
+    df = df.dropna(subset=['page_text'])
     df = df.drop_duplicates(subset = ['url'])
     df = df.reset_index(drop = True)
 

@@ -2,6 +2,7 @@ import pandas as pd
 import pickle
 import glob
 import gensim
+import numpy as np
 from gensim.test.utils import common_texts
 from gensim.corpora.dictionary import Dictionary
 from gensim.models import ldamodel
@@ -9,16 +10,17 @@ from gensim.test.utils import common_texts
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 import string
 from keras.models import Sequential
-from keras.layers import Dense
+from keras.layers import Dense, LSTM, TimeDistributed, RepeatVector, GRU
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.model_selection import train_test_split
-from keras import callbacks
+from keras import callbacks, layers
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 from keras.models import Model
 import sqlite3
-
-
+from common import tokenize
+from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.sequence import pad_sequences
 path = '/home/td/Documents/web_models'
 
 from common import get_data
@@ -35,7 +37,7 @@ def vectorize_topic_models(topic_tuples, num_of_topics):
 
 
 class WebsiteModels():
-    def __init__(self, max_vocab_size = 5000, min_n_gram = 1, max_n_gram = 1):
+    def __init__(self, max_vocab_size = 10000, min_n_gram = 1, max_n_gram = 1):
         self.max_vocab_size = max_vocab_size
         self.bow_vectorizer = CountVectorizer(ngram_range = (min_n_gram, max_n_gram),max_features = self.max_vocab_size, binary=True, max_df=.1)
 
@@ -126,29 +128,66 @@ class WebsiteModels():
         return f1_score(lr_model.predict(x_val_vec), y_val)
 
 
-df = get_data()
+
+    def get_autoencoder_model(self, max_len):
+        model = Sequential()
+        model.add(GRU(256, activation='relu', input_shape=(max_len,1), return_sequences=False))
+        model.add(RepeatVector(max_len))
+        model.add(GRU(256, activation='relu', return_sequences=True))
+        model.add(TimeDistributed(Dense(1)))
+        model.compile(optimizer='adam', loss='mse')
+        model.summary()
+        return model
+
+
+    def seq2seq_autoencoder(self, documents, max_words=1000, max_text_len = 1000):
+        word_frequency_dict = dict()
+        for i in documents:
+            words = tokenize(i)
+            for w in words:
+                word_frequency_dict.setdefault(w, 0)
+                word_frequency_dict[w] += 1
+
+        word_frequency_list = list()
+        for i in word_frequency_dict:
+            word_frequency_list.append((i,word_frequency_dict[i]))
+        top_n_words = [i[0] for i in sorted(word_frequency_list, key=lambda x: x[1], reverse=True)[:max_words]]
+
+        t = Tokenizer(num_words=max_words)
+        t.fit_on_texts(documents)
+        documents_tokenized = t.texts_to_sequences(documents)
+        documents_tokenized = pad_sequences(documents_tokenized, maxlen = max_text_len)
+        documents_np = np.array(documents_tokenized)
+        documents_np = documents_np.reshape(documents_np.shape[0], max_text_len, 1)
+        autoencoder = self.get_autoencoder_model(max_text_len)
+        autoencoder.fit(documents_np, documents_np, batch_size=1)
+
+df = get_data(10000)
 score_dict = dict()
 models = WebsiteModels(max_vocab_size = 5000)
 
-models.fit_baseline(df['response'].dropna().tolist())
+
+models.seq2seq_autoencoder(df['page_text'])
+
+models.fit_baseline(df['page_text'].dropna().tolist())
 
 
-score_dict['lda_score_2'] = models.evaluate_lda_topic_models(df['response'], df['is_https'], num_topics = 2)
-score_dict['lda_score_4'] = models.evaluate_lda_topic_models(df['response'], df['is_https'], num_topics = 4)
-score_dict['lda_score_8'] = models.evaluate_lda_topic_models(df['response'], df['is_https'], num_topics = 8)
-score_dict['lda_score_16'] = models.evaluate_lda_topic_models(df['response'], df['is_https'], num_topics = 16)
-score_dict['lda_score_32'] = models.evaluate_lda_topic_models(df['response'], df['is_https'], num_topics = 32)
-score_dict['lda_score_64'] = models.evaluate_lda_topic_models(df['response'], df['is_https'], num_topics = 64)
-score_dict['dnn_score_8'] = models.evaluate_dnn_autoencoder(df['response'], df['is_https'], encoding_size = 8)
-score_dict['dnn_score_16'] = models.evaluate_dnn_autoencoder(df['response'], df['is_https'], encoding_size = 16)
-score_dict['dnn_score_32'] = models.evaluate_dnn_autoencoder(df['response'], df['is_https'], encoding_size = 32)
-score_dict['dnn_score_64'] = models.evaluate_dnn_autoencoder(df['response'], df['is_https'], encoding_size = 64)
-score_dict['dnn_score_128'] = models.evaluate_dnn_autoencoder(df['response'], df['is_https'], encoding_size = 128)
-score_dict['doc2vec_score_16'] = models.evaluate_doc2vec(df['response'], df['is_https'], encoding_size = 16)
-score_dict['doc2vec_score_32'] = models.evaluate_doc2vec(df['response'], df['is_https'], encoding_size = 32)
-score_dict['doc2vec_score_64'] = models.evaluate_doc2vec(df['response'], df['is_https'], encoding_size = 64)
-score_dict['doc2vec_score_128'] = models.evaluate_doc2vec(df['response'], df['is_https'], encoding_size = 128)
-score_dict['doc2vec_score_256'] = models.evaluate_doc2vec(df['response'], df['is_https'], encoding_size = 256)
+score_dict['lda_score_2'] = models.evaluate_lda_topic_models(df['page_text'], df['is_https'], num_topics = 2)
+score_dict['lda_score_4'] = models.evaluate_lda_topic_models(df['page_text'], df['is_https'], num_topics = 4)
+score_dict['lda_score_8'] = models.evaluate_lda_topic_models(df['page_text'], df['is_https'], num_topics = 8)
+score_dict['lda_score_16'] = models.evaluate_lda_topic_models(df['page_text'], df['is_https'], num_topics = 16)
+score_dict['lda_score_32'] = models.evaluate_lda_topic_models(df['page_text'], df['is_https'], num_topics = 32)
+score_dict['lda_score_64'] = models.evaluate_lda_topic_models(df['page_text'], df['is_https'], num_topics = 64)
+score_dict['dnn_score_8'] = models.evaluate_dnn_autoencoder(df['page_text'], df['is_https'], encoding_size = 8)
+score_dict['dnn_score_16'] = models.evaluate_dnn_autoencoder(df['page_text'], df['is_https'], encoding_size = 16)
+score_dict['dnn_score_32'] = models.evaluate_dnn_autoencoder(df['page_text'], df['is_https'], encoding_size = 32)
+score_dict['dnn_score_64'] = models.evaluate_dnn_autoencoder(df['page_text'], df['is_https'], encoding_size = 64)
+score_dict['dnn_score_128'] = models.evaluate_dnn_autoencoder(df['page_text'], df['is_https'], encoding_size = 128)
+score_dict['doc2vec_score_16'] = models.evaluate_doc2vec(df['page_text'], df['is_https'], encoding_size = 16)
+score_dict['doc2vec_score_32'] = models.evaluate_doc2vec(df['page_text'], df['is_https'], encoding_size = 32)
+score_dict['doc2vec_score_64'] = models.evaluate_doc2vec(df['page_text'], df['is_https'], encoding_size = 64)
+score_dict['doc2vec_score_128'] = models.evaluate_doc2vec(df['page_text'], df['is_https'], encoding_size = 128)
+score_dict['doc2vec_score_256'] = models.evaluate_doc2vec(df['page_text'], df['is_https'], encoding_size = 256)
 
 score_dict['lr_score'] = models.evaluate_simple_lr(df['response'], df['is_https'])
 
