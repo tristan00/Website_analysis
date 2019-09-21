@@ -54,9 +54,9 @@ import glob
 import pandas as pd
 
 files = glob.glob(f'{path}/*.txt')
-dfs = [pd.read_csv(i, sep = '\t') for i in files]
+dfs = [pd.read_csv(i, sep='\t') for i in files]
 df = pd.concat(dfs)
-df = df.dropna(subset = ['ClickURL'])
-df = df.drop_duplicates(subset = ['ClickURL'])
+df = df.dropna(subset=['ClickURL'])
+df = df.drop_duplicates(subset=['ClickURL'])
 df = df[['ClickURL']]
 df.to_csv('/tmp/web_crawler_input.txt')

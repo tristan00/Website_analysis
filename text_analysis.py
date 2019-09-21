@@ -18,15 +18,15 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 from keras.models import Model
 import sqlite3
-from common import tokenize
+from common import tokenize, DataManager
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
+
 path = '/home/td/Documents/web_models'
 
 from sklearn.preprocessing import OneHotEncoder
 import functools
 import operator
-from common import get_data
 
 replacement_value = 'replacement_value'
 
@@ -99,6 +99,15 @@ class WebsiteModels():
         x_train, x_val, y_train, y_val = train_test_split(x, target, test_size=.1, random_state=1)
         lr_model.fit(x_train, y_train)
         return f1_score(lr_model.predict(x_val), y_val)
+
+    def get_simple_dnn(self, input_dim):
+        dnn = Sequential()
+        dnn.add(Dense(256, input_dim=input_dim, activation='relu'))
+        dnn.add(Dense(256, activation='relu'))
+        dnn.add(Dense(1, activation='relu'))
+
+        dnn.compile(loss='binary_crossentropy', optimizer='adam', metrics=['mean_squared_error'])
+        return dnn
 
     def evaluate_dnn_autoencoder(self, documents, target, encoding_size = 16):
         autoencoder = Sequential()
@@ -190,36 +199,56 @@ class WebsiteModels():
         return sequence_autoencoder
 
 
-    def seq2seq_autoencoder(self, documents, max_words=1000, max_text_len = 1000):
+    def seq2seq_autoencoder(self, df, target, max_words=1000, max_text_len = 1000, latent_dims = 128):
         enc = OHE()
-        documents_tokenized = [tokenize(i) for i in documents]
 
-        all_docs = functools.reduce(operator.concat, documents_tokenized)
+        df_temp = df.sample(frac = 1)
+        meta_docs = df_temp['meta'].tolist()
+        text_docs = df_temp['text'].tolist()
+        targets = df_temp['meta_matches_text'].tolist()
+
+        meta_docs_tokenized = [tokenize(i) for i in meta_docs]
+        text_docs_tokenized = [tokenize(i) for i in text_docs]
+
+        all_docs = meta_docs_tokenized + text_docs_tokenized
         all_docs = pd.Series(all_docs)
         enc.fit(all_docs)
         documents_enc = []
+        meta_docs_enc = []
+        text_docs_enc = []
 
-        for i in documents_tokenized:
+        for i in meta_docs_tokenized:
             next_doc = enc.transform(np.array(i).reshape(-1, 1))
-            print(next_doc.max())
             documents_enc.append(next_doc)
+            meta_docs_enc.append(next_doc)
+
+        for i in text_docs_tokenized:
+            next_doc = enc.transform(np.array(i).reshape(-1, 1))
+            documents_enc.append(next_doc)
+            text_docs_enc.append(next_doc)
 
         documents_np = np.array(documents_enc)
         # documents_np = documents_np.reshape(documents_np.shape[0], max_text_len, 1)
         documents_np = documents_np.reshape((documents_np.shape[0], max_text_len, len(enc.categories_.tolist())))
-        autoencoder = self.get_autoencoder_model(max_text_len, enc.length(), 128)
+        autoencoder = self.get_autoencoder_model(max_text_len, enc.length(), latent_dims)
         autoencoder.fit(documents_np, documents_np, batch_size=1)
 
+        dnn = self.get_simple_dnn(latent_dims + latent_dims)
+        meta_docs_rep = autoencoder.predict(meta_docs_enc)
+        text_docs_rep = autoencoder.predict(text_docs_enc)
 
-df = get_data(1000)
-score_dict = dict()
+
+
+
+dm = DataManager()
+df1 = dm.get_dataset_of_meta_matching_page_text(max_dataset_size=10000)
+df2 = dm.get_dataset_of_meta_matching_page_text(max_dataset_size=10000)
+df = pd.concat(df1, df2)
 models = WebsiteModels(max_vocab_size = 5000)
 
-
-models.seq2seq_autoencoder(df['page_text'])
-
+score_dict = dict()
+models.seq2seq_autoencoder(df['meta'], df['text'], )
 models.fit_baseline(df['page_text'].dropna().tolist())
-
 
 score_dict['lda_score_2'] = models.evaluate_lda_topic_models(df['page_text'], df['is_https'], num_topics = 2)
 score_dict['lda_score_4'] = models.evaluate_lda_topic_models(df['page_text'], df['is_https'], num_topics = 4)
