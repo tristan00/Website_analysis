@@ -14,14 +14,25 @@ import sqlite3
 import numpy as np
 import tqdm
 import ast
-from common import dir_loc, db_name, is_link_external, is_absolute, extract_meta_information, extract_page_text, extract_title, get_initial_website_list, extract_keywords, extract_description
+from common import (dir_loc, db_name,
+                    is_link_external,
+                    is_absolute,
+                    extract_meta_information,
+                    extract_page_text,
+                    extract_title,
+                    get_initial_website_list,
+                    extract_keywords,
+                    extract_description,
+                    get_directory_hash)
 import asyncio
 import aiohttp
 import multiprocessing
+import hashlib
+import datetime
 
-web_timeout = 5
-ignore_domains = []
-max_page_size = 10000000
+# web_timeout = 5
+# ignore_domains = []
+# max_page_size = 10000000
 
 def request_html(url):
     s = requests.Session()
@@ -44,16 +55,13 @@ def generate_link_dict(url):
     return record
 
 
-def process_html(r_text, r_time, url):
-    if r_text and len(r_text) <= max_page_size:
+def process_html(r_text, r_time, url, timestamp):
+    if r_text:
         record = generate_link_dict(url)
-
-        # print('received  response from: {0} in {1} seconds'.format(url, r_time))
-
-        scrape_successful = True
         soup = BeautifulSoup(r_text, 'lxml')
         new_links = [i['href'] for i in soup.find_all('a', href=True)]
         if new_links:
+
             new_abs_links = [i for i in new_links if is_link_external(i, record['netloc'])]
             new_rel_links1 = [i for i in new_links if not is_link_external(i, record['netloc']) and is_absolute(i)]
             new_rel_links2 = [i for i in new_links if not is_link_external(i, record['netloc']) and not is_absolute(i)]
@@ -65,19 +73,33 @@ def process_html(r_text, r_time, url):
             record['page_internal_links'] = str(new_rel_links_joined)
             record['page_links'] = str(combined_links)
             record['request_time'] = r_time
-            record['request_timestamp'] = time.time()
-            record['html'] = r_text
-            record['meta'] = extract_meta_information(soup)
-            record['page_text'] = extract_page_text(soup)
+            record['request_timestamp'] = timestamp
+            # record['html'] = r_text
+            # record['meta'] = extract_meta_information(soup)
+            # record['page_text'] = extract_page_text(soup)
             record['title'] = extract_title(soup)
             record['keywords'] = extract_keywords(soup)
             record['description'] = extract_description(soup)
 
+            dir_hash_value = get_directory_hash(url)
+
+            hashGen = hashlib.sha512()
+            hashGen.update(f"{url}{timestamp}".encode('utf-8'))
+            file_name = hashGen.hexdigest()
+
+            if not os.path.exists(f'{dir_loc}/all_data_chunks/{dir_hash_value}'):
+                os.makedirs(f'{dir_loc}/all_data_chunks/{dir_hash_value}')
+
+            with open(f'{dir_loc}/all_data_chunks/{dir_hash_value}/{file_name}.txt', 'w') as f:
+                f.write(r_text)
+
+            record['html_loc'] = f'{dir_hash_value}/{file_name}.txt'
+
             record_df = pd.DataFrame.from_dict([record])
             record_df = record_df.set_index('url')
 
-            with sqlite3.connect('{dir}/{db_name}'.format(dir = dir_loc, db_name=db_name)) as conn_disk:
-                record_df.to_sql('websites', conn_disk, if_exists='append', index  = True)
+            with sqlite3.connect(f'{dir_loc}/{db_name}') as conn_disk:
+                record_df.to_sql('websites', conn_disk, if_exists='append', index = True)
 
 
 def scrape_url(url):
@@ -89,7 +111,7 @@ def scrape_url(url):
         r = s.get(url, timeout = (5, 5), allow_redirects=True)
         t2 = time.time()
         if r.status_code == 200:
-            process_html(r.text, t2- start_time, url)
+            process_html(r.text, t2- start_time, url, start_time)
             # print('processed {}'.format(url))
     except requests.exceptions.MissingSchema:
         pass
@@ -120,7 +142,15 @@ def process_urls(q):
 
 class Crawler():
 
-    def __init__(self, domain_time_delay = 3600, url_time_delay = 2419200, max_website_len = 500000, verbose = False, num_of_processes = 30):
+    def __init__(self,
+                 domain_time_delay = 3600,
+                 url_time_delay = 2419200,
+                 max_website_len = 500000,
+                 verbose = False,
+                 num_of_processes = 16,
+                 max_average_time_per_website = 1.0):
+        self.website_queue_counter = 0
+        self.max_average_time_per_website = max_average_time_per_website
         self.num_of_processes = num_of_processes
         self.max_website_len = max_website_len
         self.verbose = verbose
@@ -141,19 +171,34 @@ class Crawler():
         self.get_new_session()
         self.make_queue_and_pool()
 
-
     def make_queue_and_pool(self):
         self.q = multiprocessing.Queue()
         self.pool = [multiprocessing.Process(target=process_urls, args=(self.q, )) for _ in range(self.num_of_processes)]
         [p.start() for p in self.pool]
-
+        self.website_queue_counter = 0
 
     def refresh_pool_and_queue(self):
         [self.q.put(None) for _ in range(self.num_of_processes)]
-        [p.join() for p in self.pool]
+        # [p.join() for p in self.pool]
+        timeout = (self.max_average_time_per_website * self.website_queue_counter)/len(self.pool)
+        start = time.time()
+        formatted_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        print(f'Pool of {len(self.pool)} processes has {timeout} seconds to scrape {self.website_queue_counter} urls. Staring at {formatted_timestamp}.')
+
+        while time.time() - start <= timeout:
+            if any(p.is_alive() for p in self.pool):
+                time.sleep(.1)
+            else:
+                break
+        else:
+            print("Timed out, killing all processes")
+            for p in self.pool:
+                p.terminate()
+                p.join()
+
         del self.pool, self.q
         self.make_queue_and_pool()
-
 
     def print(self, s, force_verbose = False):
         if self.verbose or force_verbose:
@@ -174,7 +219,6 @@ class Crawler():
         if len(url_list) > n:
             return random.sample(url_list, n)
         return url_list
-
 
     def run_page_rank(self, n, num_of_iterations = 1):
         #TODO:  automate stopping condition
@@ -220,18 +264,31 @@ class Crawler():
         print(self.page_rank.shape, len(ranking_dict1))
         return self.page_rank['url'][:n].tolist()
 
-
     def load_past_data(self):
-        try:
 
-            with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='domain_time_delay_record_keeper'), 'rb') as f:
-                self.domain_time_delay_record_keeper = pickle.load(f)
-            with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='url_time_delay_record_keeper'), 'rb') as f:
-                self.url_time_delay_record_keeper = pickle.load(f)
-            with open('{dir}/{file}.pkl'.format(dir=self.data_folder_loc, file='visited_links'), 'rb') as f:
-                self.visited_links = pickle.load(f)
+        try:
+            with sqlite3.connect(f'{dir_loc}/{db_name}') as conn_disk:
+                res = conn_disk.execute('select url, netloc, request_timestamp from websites')
+
+                self.domain_time_delay_record_keeper = dict()
+                self.url_time_delay_record_keeper = dict()
+                self.visited_links = set()
+
+                for i in res:
+                    url, netloc, request_timestamp = i
+
+                    self.domain_time_delay_record_keeper.setdefault(netloc, float(request_timestamp))
+                    self.domain_time_delay_record_keeper[netloc] = max(self.domain_time_delay_record_keeper[netloc], float(request_timestamp))
+
+                    self.url_time_delay_record_keeper.setdefault(url, float(request_timestamp))
+                    self.url_time_delay_record_keeper[url] = max(self.url_time_delay_record_keeper[url], float(request_timestamp))
+
+                    self.visited_links.add(url)
 
         except:
+            self.domain_time_delay_record_keeper = dict()
+            self.url_time_delay_record_keeper = dict()
+            self.visited_links = set()
             traceback.print_exc()
 
     def save_data(self):
@@ -244,11 +301,9 @@ class Crawler():
             pickle.dump(self.visited_links, f)
         # print('data saved')
 
-
     def get_new_session(self):
         self.s = requests.Session()
         self.s.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36',}
-
 
     def generate_link_dict(self, url):
         parsed_url = parse.urlparse(url)
@@ -264,14 +319,16 @@ class Crawler():
         record['timestamp_last_scraped'] = 0
         return record
 
-
     def scrape_url(self, next_link):
         scrape_successful = False
         self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
         self.url_time_delay_record_keeper.setdefault(next_link['url'], 0)
 
-        if next_link['url'] and time.time() - self.domain_time_delay_record_keeper[next_link['netloc']] > self.domain_time_delay and time.time() - self.url_time_delay_record_keeper[next_link['url']] > self.url_time_delay:
+        if next_link['url'] and \
+                time.time() - self.domain_time_delay_record_keeper[next_link['netloc']] > self.domain_time_delay and \
+                time.time() - self.url_time_delay_record_keeper[next_link['url']] > self.url_time_delay:
             try:
+                self.website_queue_counter += 1
                 self.domain_time_delay_record_keeper[next_link['netloc']] = time.time()
                 self.url_time_delay_record_keeper[next_link['url']] = time.time()
                 self.q.put(next_link['url'])
@@ -295,12 +352,11 @@ class Crawler():
         for c, i in enumerate(website_list):
             rec = self.generate_link_dict(i)
             self.scrape_url(rec)
-
-        self.save_data()
         self.refresh_pool_and_queue()
 
-    def crawl(self, batch_size = 1000, prob_of_random_url_choice = .1, randomize_page_rank_polling = True, num_of_batches = 10, num_page_rank_iterations = 5):
+    def crawl(self, batch_size = 1000, prob_of_random_url_choice = .1, randomize_page_rank_polling = True, num_of_batches = 1, num_page_rank_iterations = 5):
         for batch in range(num_of_batches):
+            self.load_past_data()
 
             if random.random() > prob_of_random_url_choice:
                 self.print('', force_verbose=True)
@@ -330,20 +386,18 @@ class Crawler():
                 self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
                 self.scrape_url(next_link)
 
-            self.save_data()
+            # self.save_data()
             self.refresh_pool_and_queue()
 
 
 if __name__ == '__main__':
     c = Crawler()
     while True:
-        print('here')
-
-        # initial_sites = get_initial_website_list()
-        # initial_sites2 = random.sample(initial_sites, k = 1000000)
-        # c.scrape_list(initial_sites2)
-        c.crawl(num_of_batches=1, batch_size=10000000, prob_of_random_url_choice=1.0)
-        c.crawl(num_of_batches=1, batch_size=100000, prob_of_random_url_choice=0.0)
+        initial_sites = get_initial_website_list()
+        initial_sites_sample = random.sample(initial_sites, k = 10000)
+        c.scrape_list(initial_sites_sample)
+        c.crawl(num_of_batches=1, batch_size=1000, prob_of_random_url_choice=1.0)
+        c.crawl(num_of_batches=1, batch_size=1000, prob_of_random_url_choice=0.0, num_page_rank_iterations = random.randint(2, 10))
 
 
 

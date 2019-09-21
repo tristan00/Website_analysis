@@ -15,6 +15,8 @@ import traceback
 # dir_loc = '/home/td/Documents/web_data'
 dir_loc = '/media/td/Samsung_T5/web_data'
 # dir_loc = 'E:/web_data'
+num_of_file_chunks = 65536
+# dir_loc = '/home/td/Documents/data/website_data'
 url_record_file_name = 'links.pkl'
 url_record_backup_file_name = 'links_backup.pkl'
 db_name = 'website.db'
@@ -137,6 +139,21 @@ class DataManager():
                     traceback.print_exc()
 
         return pd.DataFrame(data)
+
+
+
+
+def clean_url(url):
+    return url.replace('/', '')
+
+
+def get_directory_hash(url):
+    value = 0
+    c_url = clean_url(url)
+    for i in c_url:
+        value *= max(ord(i), 1)
+        value += max(ord(i), 1)
+    return str(value % num_of_file_chunks).zfill(len(str(num_of_file_chunks + 1)))
 
 
 def get_distance(v1, v2):

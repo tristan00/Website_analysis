@@ -10,7 +10,7 @@ from gensim.test.utils import common_texts
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 import string
 from keras.models import Sequential
-from keras.layers import Dense, LSTM, TimeDistributed, RepeatVector, GRU
+from keras.layers import Dense, LSTM, TimeDistributed, RepeatVector, GRU, Input
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.model_selection import train_test_split
 from keras import callbacks, layers
@@ -23,10 +23,59 @@ from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
 path = '/home/td/Documents/web_models'
 
+from sklearn.preprocessing import OneHotEncoder
+import functools
+import operator
 from common import get_data
 
+replacement_value = 'replacement_value'
 
 
+class OHE(OneHotEncoder):
+    def __init__(self, n_values=None, categorical_features=None,
+                 categories=None, sparse=True, dtype=np.float64,
+                 handle_unknown='error', min_perc = .001, col_name = ''):
+        super().__init__(n_values=n_values, categorical_features=categorical_features,
+                 categories=categories, sparse=sparse, dtype=dtype,
+                 handle_unknown=handle_unknown)
+        self.min_perc = min_perc
+        self.col_name = col_name
+        self.valid_values = []
+        self.col_names = []
+        self.nan_replacement_value = None
+
+    def fit(self, X, y=None):
+        input_series = self.process_input(X)
+        super().fit( input_series)
+        self.col_names = ['{col_base_name}_{value_name}'.format(col_base_name=self.col_name, value_name = i) for i in self.categories_[0]]
+
+    def transform(self, X):
+        input_series = self.process_input(X)
+        output = super().transform(input_series)
+        return self.process_output(output)
+
+    def process_input(self, s):
+        if not self.nan_replacement_value:
+            self.nan_replacement_value = s.mode()[0]
+        s = s.fillna(s.mode())
+        s = s.astype(str)
+
+        if not self.valid_values:
+            self.valid_values = [i for  i, j in dict(s.value_counts(normalize = True)).items() if j >= self.min_perc]
+
+        prediction_values_to_replace = [i for i in s.unique() if i not in self.valid_values]
+        replace_dict = {i: replacement_value for i in prediction_values_to_replace}
+        replace_dict.update({i:i for i in self.valid_values})
+        s = s.map(replace_dict.get)
+        return s.values.reshape(-1, 1)
+
+    def process_output(self, output):
+        output_df = pd.DataFrame(data = output.toarray(),
+                                columns = self.col_names)
+        return output_df
+
+    def length(self):
+        return len(self.categories_)
 
 
 def vectorize_topic_models(topic_tuples, num_of_topics):
@@ -129,40 +178,40 @@ class WebsiteModels():
 
 
 
-    def get_autoencoder_model(self, max_len):
-        model = Sequential()
-        model.add(GRU(256, activation='relu', input_shape=(max_len,1), return_sequences=False))
-        model.add(RepeatVector(max_len))
-        model.add(GRU(256, activation='relu', return_sequences=True))
-        model.add(TimeDistributed(Dense(1)))
-        model.compile(optimizer='adam', loss='mse')
-        model.summary()
-        return model
+    def get_autoencoder_model(self, timesteps, input_dim , latent_dim):
+        inputs = Input(shape=(timesteps, input_dim))
+        encoded = LSTM(latent_dim)(inputs)
+
+        decoded = RepeatVector(timesteps, )(encoded)
+        decoded = LSTM(input_dim, return_sequences=True)(decoded)
+
+        sequence_autoencoder = Model(inputs, decoded)
+        sequence_autoencoder.compile(optimizer='adam', loss="sparse_categorical_crossentropy", metrics=['sparse_categorical_accuracy'])
+        return sequence_autoencoder
 
 
     def seq2seq_autoencoder(self, documents, max_words=1000, max_text_len = 1000):
-        word_frequency_dict = dict()
-        for i in documents:
-            words = tokenize(i)
-            for w in words:
-                word_frequency_dict.setdefault(w, 0)
-                word_frequency_dict[w] += 1
+        enc = OHE()
+        documents_tokenized = [tokenize(i) for i in documents]
 
-        word_frequency_list = list()
-        for i in word_frequency_dict:
-            word_frequency_list.append((i,word_frequency_dict[i]))
-        top_n_words = [i[0] for i in sorted(word_frequency_list, key=lambda x: x[1], reverse=True)[:max_words]]
+        all_docs = functools.reduce(operator.concat, documents_tokenized)
+        all_docs = pd.Series(all_docs)
+        enc.fit(all_docs)
+        documents_enc = []
 
-        t = Tokenizer(num_words=max_words)
-        t.fit_on_texts(documents)
-        documents_tokenized = t.texts_to_sequences(documents)
-        documents_tokenized = pad_sequences(documents_tokenized, maxlen = max_text_len)
-        documents_np = np.array(documents_tokenized)
-        documents_np = documents_np.reshape(documents_np.shape[0], max_text_len, 1)
-        autoencoder = self.get_autoencoder_model(max_text_len)
+        for i in documents_tokenized:
+            next_doc = enc.transform(np.array(i).reshape(-1, 1))
+            print(next_doc.max())
+            documents_enc.append(next_doc)
+
+        documents_np = np.array(documents_enc)
+        # documents_np = documents_np.reshape(documents_np.shape[0], max_text_len, 1)
+        documents_np = documents_np.reshape((documents_np.shape[0], max_text_len, len(enc.categories_.tolist())))
+        autoencoder = self.get_autoencoder_model(max_text_len, enc.length(), 128)
         autoencoder.fit(documents_np, documents_np, batch_size=1)
 
-df = get_data(10000)
+
+df = get_data(1000)
 score_dict = dict()
 models = WebsiteModels(max_vocab_size = 5000)
 
