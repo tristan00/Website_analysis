@@ -12,6 +12,7 @@ import tqdm
 import glob
 import traceback
 import copy
+import ast
 
 # dir_loc = '/home/td/Documents/web_data'
 dir_loc = '/media/td/Samsung_T5/web_data'
@@ -25,14 +26,14 @@ db_name2 =  'website2.db'
 index1_db_name = 'index1.db'
 initial_website_file_name = 'web_crawler_input.txt'
 sep_char = '|'
-max_websites_per_file = 1000
+max_websites_per_file = 10000
 translator = str.maketrans(string.punctuation, ' '*len(string.punctuation))
 
 
 class DataManager():
-    def __init__(self):
+    def __init__(self, get_top_n = None, n = 10000, pagerank_iterations = 10):
         query = '''Select url, request_timestamp, file_name from websites'''
-        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name2)) as conn_disk:
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
             res = list(conn_disk.execute(query))
 
             self.url_index = dict()
@@ -41,7 +42,19 @@ class DataManager():
                 self.url_index.setdefault(url, dict())
                 self.url_index[url][request_timestamp] = file_name
         self.urls = list(self.url_index)
+        print(f'num of urls in db: {len(self.urls)}')
         del res
+
+        if get_top_n:
+            top_urls = run_page_rank(num_of_iterations=pagerank_iterations)
+
+            for i in reversed(top_urls):
+                if self.url_index.get(i):
+                    del self.url_index[i]
+                    self.urls.remove(i)
+                if len(self.urls) <= n:
+                    break
+
 
     def get_dataset_of_meta_matching_page_text(self, max_dataset_size = None):
         if max_dataset_size and len(self.urls) > max_dataset_size:
@@ -50,11 +63,10 @@ class DataManager():
             sample_urls = self.urls
 
         output = list()
-        for url in sample_urls:
-            timestamps = self.url_index[url]
+        for url in tqdm.tqdm(sample_urls):
+            timestamps = list(self.url_index[url].keys())
             if not timestamps:
                 continue
-
             timestamp = random.choice(timestamps)
             meta_record = self.get_record('meta', url, self.url_index[url][timestamp])
             text_record = self.get_record('text', url, self.url_index[url][timestamp])
@@ -80,9 +92,9 @@ class DataManager():
         random.shuffle(sample_urls_2)
 
         output = list()
-        for url1, url2 in zip(sample_urls_1, sample_urls_2):
-            timestamps1 = self.url_index[url1]
-            timestamps2 = self.url_index[url2]
+        for url1, url2 in tqdm.tqdm(zip(sample_urls_1, sample_urls_2)):
+            timestamps1 = list(self.url_index[url1].keys())
+            timestamps2 = list(self.url_index[url2].keys())
 
             if not timestamps1 or not timestamps2:
                 continue
@@ -91,7 +103,7 @@ class DataManager():
             timestamp2 = random.choice(timestamps2)
 
             meta_record = self.get_record('meta', url1, self.url_index[url1][timestamp1])
-            text_record = self.get_record('text', url1, self.url_index[url1][timestamp2])
+            text_record = self.get_record('text', url2, self.url_index[url2][timestamp2])
             if meta_record and text_record:
                 output.append({'url':url1,
                                'request_timestamp':timestamp1,
@@ -108,13 +120,58 @@ class DataManager():
         try:
             with open(f'{dir_loc}/all_{r_type}_chunks/{file_name}.txt', 'r') as f:
                 # print(f'file {file_name} found')
-                lines = f.readlines()
-                for row in lines[1:]:
+                # lines = f.readlines()
+                for row in f:
                     row_split = row.split('|')
                     if len(row_split) == 2 and row_split[0] == url:
                         return row_split[1]
         except FileNotFoundError:
             print(f'file {file_name} not found')
+
+
+def run_page_rank(n=None, num_of_iterations=1):
+    # TODO:  automate stopping condition
+    ranking_dict1 = dict()
+    ranking_dict2 = dict()
+
+    query = '''Select url, page_external_links from websites'''
+    with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
+        cursor = conn_disk.cursor()
+        res = cursor.execute(query)
+        count = 0
+        for res_temp in tqdm.tqdm(res):
+            count += 1
+            ranking_dict1[res_temp[0]] = ast.literal_eval(res_temp[1])
+
+    default_iteration_dict = {'iteration{0}'.format(i): 0 for i in range(num_of_iterations + 1)}
+    default_iteration_dict['iteration0'] = 1
+
+    for iteration in range(num_of_iterations):
+        print('page rank iteration: {}'.format(iteration))
+
+        for i in tqdm.tqdm(ranking_dict1):
+            num_of_links = len(ranking_dict1[i]) + 1
+            for j in ranking_dict1[i] + [i]:
+                if iteration == 0:
+                    ranking_dict_2_default = copy.deepcopy(default_iteration_dict)
+                    ranking_dict_1_default = copy.deepcopy(default_iteration_dict)
+                    ranking_dict_2_default['url'] = j
+                    ranking_dict_1_default['url'] = i
+                    ranking_dict2.setdefault(j, ranking_dict_2_default)
+                    ranking_dict2.setdefault(i, ranking_dict_1_default)
+
+                ranking_dict2[j]['iteration{}'.format(iteration + 1)] += (
+                        ranking_dict2[i]['iteration{}'.format(iteration)] / num_of_links)
+
+    page_rank = pd.DataFrame.from_dict(list(ranking_dict2.values()))
+
+    total = page_rank['iteration{}'.format(num_of_iterations)].sum()
+    page_rank['page_rank'] = page_rank['iteration{}'.format(num_of_iterations)] / total
+    page_rank = page_rank.sort_values('page_rank', ascending=False)
+    page_rank = page_rank[['url', 'page_rank']]
+    print(page_rank['url'][:20].tolist())
+    if n:
+        return page_rank['url'][:n].tolist()
 
 
 def clean_url(url):

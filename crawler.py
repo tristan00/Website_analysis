@@ -18,12 +18,14 @@ from common import (dir_loc, db_name,
                     is_link_external,
                     get_initial_website_list,
                     sep_char,
-                    max_websites_per_file)
+                    max_websites_per_file,
+                    run_page_rank)
 from website_text_extraction import (get_meta_info_from_html,
                                      get_text_from_html)
 import multiprocessing
 import hashlib
 import datetime
+
 
 def generate_link_dict(url):
     parsed_url = parse.urlparse(url)
@@ -43,56 +45,64 @@ def process_html(r_text, r_time, url, timestamp, file_name):
         record = generate_link_dict(url)
         soup = BeautifulSoup(r_text, 'lxml')
         new_links = [i['href'] for i in soup.find_all('a', href=True)]
-        if new_links:
-            new_abs_links = [i for i in new_links if is_link_external(i, record['netloc'])]
-            record['page_external_links'] = str(new_abs_links)
-            record['request_time'] = r_time
-            record['request_timestamp'] = timestamp
+        new_abs_links = [i for i in new_links if is_link_external(i, record['netloc'])]
+        record['page_external_links'] = str(new_abs_links)
+        record['request_time'] = r_time
+        record['request_timestamp'] = timestamp
 
-            meta_data = get_meta_info_from_html(r_text)
-            page_text = get_text_from_html(r_text)
+        meta_data = get_meta_info_from_html(r_text)
+        page_text = get_text_from_html(r_text)
 
-            with open(f'{dir_loc}/all_html_chunks/{file_name}.txt', 'a') as f:
-                f.write(f'{url}{sep_char}{str(r_text).replace(sep_char, "")}' + "\n")
-            with open(f'{dir_loc}/all_meta_chunks/{file_name}.txt', 'a') as f:
-                f.write(f'{url}{sep_char}{str(meta_data).replace(sep_char, "")}' + "\n")
-            with open(f'{dir_loc}/all_text_chunks/{file_name}.txt', 'a') as f:
-                f.write(f'{url}{sep_char}{str(page_text).replace(sep_char, "")}' + "\n")
+        with open(f'{dir_loc}/all_html_chunks/{file_name}.txt', 'a') as f:
+            f.write(f'{url}{sep_char}{str(r_text).replace(sep_char, "")}' + "\n")
+        with open(f'{dir_loc}/all_meta_chunks/{file_name}.txt', 'a') as f:
+            f.write(f'{url}{sep_char}{str(meta_data).replace(sep_char, "")}' + "\n")
+        with open(f'{dir_loc}/all_text_chunks/{file_name}.txt', 'a') as f:
+            f.write(f'{url}{sep_char}{str(page_text).replace(sep_char, "")}' + "\n")
 
-            record['file_name'] = str(file_name)
-            record_df = pd.DataFrame.from_dict([record])
-            record_df = record_df.set_index('url')
+        record['file_name'] = str(file_name)
+        record_df = pd.DataFrame.from_dict([record])
+        record_df = record_df.set_index('url')
 
-            with sqlite3.connect(f'{dir_loc}/{db_name}') as conn_disk:
-                record_df.to_sql('websites', conn_disk, if_exists='append', index=True)
+        with sqlite3.connect(f'{dir_loc}/{db_name}') as conn_disk:
+            record_df.to_sql('websites', conn_disk, if_exists='append', index=True)
 
 
 def scrape_url(url, file_name):
+    scraped_successfully = False
+    start_time = time.time()
+
     try:
         s = requests.Session()
         s.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36', }
-        start_time = time.time()
 
         r = s.get(url, timeout=(5, 5), allow_redirects=True)
         t2 = time.time()
         if r.status_code == 200:
             process_html(r.text, t2 - start_time, url, start_time, file_name)
+            scraped_successfully = True
 
     except (socket.timeout,
-            requests.exceptions.ReadTimeout,
+            requests.RequestException,
             TimeoutError,
-            requests.exceptions.ConnectionError,
-            requests.exceptions.InvalidSchema,
-            requests.exceptions.MissingSchema,
-            requests.exceptions.ReadTimeout,
+            # requests.exceptions.ConnectionError,
+            # requests.exceptions.InvalidSchema,
+            # requests.exceptions.MissingSchema,
+            # requests.exceptions.ReadTimeout,
             ValueError,
-            requests.exceptions.TooManyRedirects
+            # requests.exceptions.TooManyRedirects,
+            # requests.exceptions.ChunkedEncodingError,
+            TypeError,
+            # requests.exceptions.ContentDecodingError
             ):
         pass
     except Exception:
         pass
         print(traceback.format_exc())
+    if not scraped_successfully:
+        t2 = time.time()
+        process_html('<html></html>', t2 - start_time, url, start_time, file_name)
 
 
 def process_urls(q):
@@ -150,34 +160,33 @@ class Crawler():
         self.visited_links = set()
         self.domain_time_delay = domain_time_delay  # needed to not tax any domain too much
         self.url_time_delay = url_time_delay
-        self.data_folder_loc = dir_loc
         self.set_up_dirs()
         self.load_past_data()
         self.get_new_session()
         self.make_queue_and_pool()
 
     ##############################################################################################################
-    #High level functions:
+    # High level functions:
 
     def crawl(self, batch_size=1000, page_rank=False, num_of_batches=1, num_page_rank_iterations=5):
         for batch in range(num_of_batches):
             self.load_past_data()
 
             if page_rank:
-                self.print('', force_verbose=True)
-                self.print('running page rank', force_verbose=True)
-                self.print('', force_verbose=True)
-                self.print('using {} iterations'.format(num_page_rank_iterations))
-                next_urls_list = self.run_page_rank(batch_size, num_of_iterations=num_page_rank_iterations)
+                print('')
+                print('running page rank')
+                print('')
+                print('using {} iterations'.format(num_page_rank_iterations))
+                next_urls_list = run_page_rank(batch_size, num_of_iterations=num_page_rank_iterations)
 
             else:
-                self.print('', force_verbose=True)
-                self.print('running random urls', force_verbose=True)
-                self.print('', force_verbose=True)
+                print('')
+                print('running random urls')
+                print('')
                 next_urls_list = list(set(self.get_n_random_urls(batch_size)))
 
-            self.print('running scrape', force_verbose=True)
-            self.print('', force_verbose=True)
+            print('running scrape')
+            print('')
             for c, next_url in enumerate(next_urls_list):
                 next_link = generate_link_dict(next_url)
                 self.domain_time_delay_record_keeper.setdefault(next_link['netloc'], 0)
@@ -201,7 +210,7 @@ class Crawler():
                 scrape_successful = True
 
             except Exception:
-                self.print(traceback.format_exc(), force_verbose=False)
+                print(traceback.format_exc())
         return scrape_successful
 
     def scrape_list(self, website_list):
@@ -211,12 +220,12 @@ class Crawler():
         self.refresh_pool_and_queue()
 
     ##############################################################################################################
-    #Url sampling functions:
+    # Url sampling functions:
     def get_n_random_urls(self, n):
         url_list = []
         self.visited_links = set()
         query = '''Select url, page_external_links from websites'''
-        with sqlite3.connect('{dir}/{db_name}'.format(dir=self.data_folder_loc, db_name=db_name)) as conn_disk:
+        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
             cursor = conn_disk.cursor()
             res = cursor.execute(query)
             for res_temp in tqdm.tqdm(res):
@@ -228,58 +237,12 @@ class Crawler():
             return random.sample(url_list, n)
         return url_list
 
-    def run_page_rank(self, n, num_of_iterations=1):
-        # TODO:  automate stopping condition
-        ranking_dict1 = dict()
-        ranking_dict2 = dict()
-
-        query = '''Select url, page_external_links from websites'''
-        with sqlite3.connect('{dir}/{db_name}'.format(dir=self.data_folder_loc, db_name=db_name)) as conn_disk:
-            cursor = conn_disk.cursor()
-            res = cursor.execute(query)
-            count = 0
-            for res_temp in tqdm.tqdm(res):
-                # res_temp = res.fetchone()
-                count += 1
-                ranking_dict1[res_temp[0]] = ast.literal_eval(res_temp[1])
-
-        default_iteration_dict = {'iteration{0}'.format(i): 0 for i in range(num_of_iterations + 1)}
-        default_iteration_dict['iteration0'] = 1
-
-        for iteration in range(num_of_iterations):
-            print('page rank iteration: {}'.format(iteration))
-
-            for i in tqdm.tqdm(ranking_dict1):
-                num_of_links = len(ranking_dict1[i]) + 1
-                for j in ranking_dict1[i] + [i]:
-                    if iteration == 0:
-                        ranking_dict_2_default = copy.deepcopy(default_iteration_dict)
-                        ranking_dict_1_default = copy.deepcopy(default_iteration_dict)
-                        ranking_dict_2_default['url'] = j
-                        ranking_dict_1_default['url'] = i
-                        ranking_dict2.setdefault(j, ranking_dict_2_default)
-                        ranking_dict2.setdefault(i, ranking_dict_1_default)
-
-                    ranking_dict2[j]['iteration{}'.format(iteration + 1)] += (
-                                ranking_dict2[i]['iteration{}'.format(iteration)] / num_of_links)
-
-        self.page_rank = pd.DataFrame.from_dict(list(ranking_dict2.values()))
-
-        total = self.page_rank['iteration{}'.format(num_of_iterations)].sum()
-        self.page_rank['page_rank'] = self.page_rank['iteration{}'.format(num_of_iterations)] / total
-        self.page_rank = self.page_rank.sort_values('page_rank', ascending=False)
-        self.page_rank = self.page_rank[['url', 'page_rank']]
-        print(self.page_rank['url'][:20].tolist())
-        print(self.page_rank.shape, len(ranking_dict1))
-        return self.page_rank['url'][:n].tolist()
 
     ##############################################################################################################
-    #Utility functions:
+    # Utility functions:
     def set_up_dirs(self):
         if not os.path.exists(f'{dir_loc}'):
             os.makedirs(f'{dir_loc}')
-        if not os.path.exists(f'{self.data_folder_loc}'):
-            os.makedirs(f'{self.data_folder_loc}')
         if not os.path.exists(f'{dir_loc}/all_html_chunks'):
             os.makedirs(f'{dir_loc}/all_html_chunks')
         if not os.path.exists(f'{dir_loc}/all_text_chunks'):
@@ -300,7 +263,8 @@ class Crawler():
         start = time.time()
         formatted_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
-        print(f'Pool of {len(self.pool)} processes has {timeout} seconds to scrape {self.website_queue_counter} urls. Staring at {formatted_timestamp}.')
+        print(f'''Pool of {len(
+            self.pool)} processes has {timeout} seconds to scrape {self.website_queue_counter} urls. Starting at {formatted_timestamp}.''')
 
         while time.time() - start <= timeout:
             if any(p.is_alive() for p in self.pool):
@@ -315,10 +279,6 @@ class Crawler():
 
         del self.pool, self.q
         self.make_queue_and_pool()
-
-    def print(self, s, force_verbose=False):
-        if self.verbose or force_verbose:
-            print(s)
 
 
     def load_past_data(self):
@@ -357,10 +317,11 @@ class Crawler():
 
 if __name__ == '__main__':
     c = Crawler(num_of_processes=16)
-    initial_sites = get_initial_website_list()
-    initial_sites_sample = random.sample(initial_sites, k=10000)
-    c.scrape_list(initial_sites_sample)
+    # initial_sites = get_initial_website_list()
+    # initial_sites_sample = random.sample(initial_sites, k=10000)
+    # c.scrape_list(initial_sites_sample)
 
     while True:
+
+        c.crawl(num_of_batches=1, batch_size=100000, page_rank=True, num_page_rank_iterations=random.randint(2, 10))
         c.crawl(num_of_batches=1, batch_size=100000, page_rank=False)
-        c.crawl(num_of_batches=1, batch_size=10000, page_rank=True, num_page_rank_iterations=random.randint(2, 10))
