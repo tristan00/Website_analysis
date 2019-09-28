@@ -21,7 +21,8 @@ from common import (dir_loc, db_name,
                     max_websites_per_file,
                     run_page_rank,
                     get_meta_info_from_html,
-                    get_text_from_html)
+                    get_text_from_html,
+                    tokenize)
 import multiprocessing
 import hashlib
 import datetime
@@ -53,6 +54,13 @@ def process_html(r_text, r_time, url, timestamp, file_name):
         meta_data = get_meta_info_from_html(r_text)
         page_text = get_text_from_html(r_text)
 
+        record['html_char_len'] = len(r_text)
+        record['text_char_len'] = len(page_text)
+        record['meta_char_len'] = len(meta_data)
+        record['html_word_len'] = len(tokenize(r_text))
+        record['text_word_len'] = len(tokenize(page_text))
+        record['meta_word_len'] = len(tokenize(meta_data))
+
         with open(f'{dir_loc}/all_html_chunks/{file_name}.txt', 'a') as f:
             f.write(f'{url}{sep_char}{str(r_text).replace(sep_char, "")}' + "\n")
         with open(f'{dir_loc}/all_meta_chunks/{file_name}.txt', 'a') as f:
@@ -64,7 +72,7 @@ def process_html(r_text, r_time, url, timestamp, file_name):
         record_df = pd.DataFrame.from_dict([record])
         record_df = record_df.set_index('url')
 
-        with sqlite3.connect(f'{dir_loc}/{db_name}') as conn_disk:
+        with sqlite3.connect(f'{dir_loc}/dbs/{db_name}') as conn_disk:
             record_df.to_sql('websites', conn_disk, if_exists='append', index=True)
 
 
@@ -77,7 +85,7 @@ def scrape_url(url, file_name):
         s.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36', }
 
-        r = s.get(url, timeout=(5, 5), allow_redirects=True)
+        r = s.get(url, timeout=(5, 5), allow_redirects=False)
         t2 = time.time()
         if r.status_code == 200:
             process_html(r.text, t2 - start_time, url, start_time, file_name)
@@ -120,8 +128,6 @@ def process_urls(q):
             break
 
 
-
-
 class Crawler():
 
     def __init__(self,
@@ -130,7 +136,9 @@ class Crawler():
                  max_website_len=500000,
                  verbose=False,
                  num_of_processes=4,
-                 max_average_time_per_website=4.0):
+                 max_average_time_per_website=4.0,
+                 pool_time_limit_minimum = 60.0):
+        self.pool_time_limit_minimum = pool_time_limit_minimum
         self.website_queue_counter = 0
         self.max_average_time_per_website = max_average_time_per_website
         self.num_of_processes = num_of_processes
@@ -212,7 +220,7 @@ class Crawler():
         url_list = []
         self.visited_links = set()
         query = '''Select url, page_external_links from websites'''
-        with sqlite3.connect('{dir}/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
+        with sqlite3.connect('{dir}/dbs/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
             cursor = conn_disk.cursor()
             res = cursor.execute(query)
             for res_temp in tqdm.tqdm(res):
@@ -246,7 +254,7 @@ class Crawler():
     def refresh_pool_and_queue(self):
         [self.q.put(None) for _ in range(self.num_of_processes)]
         # [p.join() for p in self.pool]
-        timeout = (self.max_average_time_per_website * self.website_queue_counter) / len(self.pool)
+        timeout = self.pool_time_limit_minimum + ((self.max_average_time_per_website * self.website_queue_counter) / len(self.pool))
         start = time.time()
         formatted_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
@@ -267,10 +275,9 @@ class Crawler():
         del self.pool, self.q
         self.make_queue_and_pool()
 
-
     def load_past_data(self):
         try:
-            with sqlite3.connect(f'{dir_loc}/{db_name}') as conn_disk:
+            with sqlite3.connect(f'{dir_loc}/dbs/{db_name}') as conn_disk:
                 res = conn_disk.execute('select url, netloc, request_timestamp from websites')
 
                 self.domain_time_delay_record_keeper = dict()
@@ -302,24 +309,30 @@ class Crawler():
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.100 Safari/537.36', }
 
 
+def wipe_db():
+    with sqlite3.connect(f'{dir_loc}/dbs/{db_name}') as conn_disk:
+        conn_disk.execute('delete from websites')
+
+
 if __name__ == '__main__':
-    crawler = Crawler(num_of_processes=16)
+    # wipe_db()
+
+    crawler = Crawler(num_of_processes=32)
     initial_sites = list(set(get_initial_website_list()))
     random.shuffle(initial_sites)
 
-    num_of_chunks = 100
+    num_of_chunks = 400
     chunks = [set() for _ in range(num_of_chunks)]
 
-    for c, i in enumerate(initial_sites):
-        chunks[c%num_of_chunks].add(i)
+    for counter, i in enumerate(initial_sites):
+        chunks[counter%num_of_chunks].add(i)
 
-    for i in chunks:
+    start_time = time.time()
+    for counter, i in enumerate(chunks):
         crawler.scrape_list(i)
+        print(f'iteration: {counter}, time: {time.time() - start_time}, average time per chunk: {(time.time() - start_time)/max(1, counter)}')
 
+    while True:
+        crawler.crawl(num_of_batches=1, batch_size=100000, page_rank=True, num_page_rank_iterations=3)
+        crawler.crawl(num_of_batches=1, batch_size=100000, page_rank=False)
 
-    # while True:
-    #     # c.crawl(num_of_batches=1, batch_size=1000000, page_rank=True, num_page_rank_iterations=3)
-    #     initial_sites_sample = random.sample(initial_sites, k=10000)
-    #     c.scrape_list(initial_sites_sample)
-    #     # c.crawl(num_of_batches=1, batch_size=100000, page_rank=False)
-    #

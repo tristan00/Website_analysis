@@ -14,7 +14,7 @@ from keras.layers import Dense, LSTM, TimeDistributed, RepeatVector, GRU, Input
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.model_selection import train_test_split
 from keras import callbacks, layers
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, ElasticNet
 from sklearn.metrics import f1_score, accuracy_score
 from keras.models import Model, load_model
 import sqlite3
@@ -38,7 +38,6 @@ import functools
 import operator
 import pickle
 
-
 path = '/home/td/Documents/web_models'
 
 replacement_value = 'replacement_value'
@@ -55,7 +54,9 @@ class TextModel():
     valid_types = ['dnn',
                    'logistic',
                    'rf',
-                   'svm']
+                   'svm',
+                   'lr',
+                   'elasticnet']
 
     def __init__(self, m_type,
                  num_of_hidden_layers=2,
@@ -67,10 +68,13 @@ class TextModel():
                  rf_criterion='gini',
                  rf_max_depth=8,
                  rf_min_samples_split=2,
-                 kernel = 'rbf'):
+                 kernel='rbf',
+                 pipeline_id = None
+                 ):
 
         assert m_type in self.valid_types
 
+        self.file_loc = f'{dir_loc}/text_analysis_results/models/{pipeline_id}_{m_type}_model'
         self.m_type = m_type
         self.num_of_hidden_layers = num_of_hidden_layers
         self.width_of_hidden_layers = width_of_hidden_layers
@@ -93,13 +97,12 @@ class TextModel():
             self.model.add(Dense(1, activation='sigmoid'))
             self.model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['acc'])
 
-            file_name = str(uuid.uuid4())
             cb1 = callbacks.EarlyStopping(monitor='val_loss',
                                           min_delta=0,
                                           patience=self.patience,
                                           verbose=0,
                                           mode='auto')
-            cb2 = callbacks.ModelCheckpoint(f'/tmp/{file_name}',
+            cb2 = callbacks.ModelCheckpoint(self.file_loc,
                                             monitor='val_loss',
                                             verbose=0,
                                             save_best_only=True,
@@ -111,14 +114,7 @@ class TextModel():
                            callbacks=[cb1, cb2],
                            batch_size=self.batch_size,
                            nb_epoch=self.nb_epoch)
-            self.model = load_model(f'/tmp/{file_name}')
-            os.remove(f'/tmp/{file_name}')
-
-        if self.m_type == 'logistic':
-            self.model = LogisticRegression()
-
-            print(x_train.shape, y_train.shape)
-            self.model.fit(x_train, y_train)
+            self.model = load_model(self.file_loc)
 
         if self.m_type == 'rf':
             self.model = RandomForestClassifier(n_estimators=self.rf_n_estimators,
@@ -128,12 +124,25 @@ class TextModel():
             self.model.fit(x_train, y_train)
         if self.m_type == 'svm':
             self.model = SVC(kernel=self.kernel)
-
+            print(x_train.shape, y_train.shape)
+            self.model.fit(x_train, y_train)
+        if self.m_type == 'lr':
+            self.model = LogisticRegression()
+            print(x_train.shape, y_train.shape)
+            self.model.fit(x_train, y_train)
+        if self.m_type == 'elasticnet':
+            self.model = ElasticNet()
             print(x_train.shape, y_train.shape)
             self.model.fit(x_train, y_train)
 
+        if self.m_type in ['lr', 'rf', 'elasticnet', 'svm', 'logistic']:
+            with open(self.file_loc, 'wb') as f:
+                pickle.dump(self.model, f)
+
     def predict(self, x):
-        return self.model.predict(x)
+        preds = self.model.predict(x)
+        print(f'model prediction shape: {preds.shape}')
+        return preds
 
     def evaluate(self, x_val, y_val):
         preds = np.rint(self.model.predict(x_val)).astype(int)
@@ -150,58 +159,80 @@ class TextEncoding():
                    'bert_avg',
                    'fasttext']
 
-    def __init__(self, e_type, max_vocab_size=10000, min_n_gram=1, max_n_gram=1, max_df=.1, num_of_topics=64,
-                 encoding_size=64, epochs = 3, max_page_size = 10000):
+    def __init__(self, e_type, max_vocab_size=10000, min_word_n_gram=1, max_word_n_gram=2, min_char_n_gram=1,
+                 max_char_n_gram=2, max_df=.01, num_of_topics=64,
+                 encoding_size=64, epochs=3, max_page_size=10000, fasttext_algorithm='skipgram',
+                 tokenizer_level='word', pipeline_id = None):
 
         assert e_type in self.valid_types
 
+        self.file_loc = f'{dir_loc}/text_analysis_results/models/{pipeline_id}_{e_type}_encoder'
         self.e_type = e_type
         self.max_vocab_size = max_vocab_size
-        self.min_n_gram = min_n_gram
-        self.max_n_gram = max_n_gram
+        self.min_word_n_gram = min_word_n_gram
+        self.max_word_n_gram = max_word_n_gram
+        self.min_char_n_gram = min_char_n_gram
+        self.max_char_n_gram = max_char_n_gram
+        self.tokenizer_level = tokenizer_level
         self.max_df = max_df
         self.num_of_topics = num_of_topics
         self.encoding_size = encoding_size
         self.common_dictionary = None
         self.epochs = epochs
-        # ctx = mx.gpu(0)
-        # self.bert_embedding = BertEmbedding()
+        self.fasttext_algorithm = fasttext_algorithm
         self.max_page_size = max_page_size
         # self.glove_model = gensim.models.KeyedVectors.load_word2vec_format(f'{dir_loc}/glove.840B.300d.txt')
 
     def fit(self, documents):
-
         documents = [tokenize(d) for d in documents]
         documents = [d[:self.max_page_size] for d in documents]
         documents = [' '.join(d) for d in documents]
 
-        if self.e_type == 'tfidf':
-            self.vectorizer = CountVectorizer(ngram_range=(self.min_n_gram, self.max_n_gram),
-                                              max_features=self.max_vocab_size, binary=False, max_df=self.max_df)
-            self.vectorizer.fit(documents)
-        if self.e_type == 'count':
-            self.vectorizer = CountVectorizer(ngram_range=(self.min_n_gram, self.max_n_gram),
-                                              max_features=self.max_vocab_size, binary=False, max_df=self.max_df)
-            self.vectorizer.fit(documents)
-        if self.e_type == 'binary':
-            self.vectorizer = CountVectorizer(ngram_range=(self.min_n_gram, self.max_n_gram),
-                                              max_features=self.max_vocab_size, binary=True, max_df=self.max_df)
-            self.vectorizer.fit(documents)
+        if self.e_type in ['tfidf', 'count', 'binary']:
+            if self.tokenizer_level == 'word':
+                min_n_gram = self.min_word_n_gram
+                max_n_gram = self.max_word_n_gram
+            else:
+                min_n_gram = self.min_char_n_gram
+                max_n_gram = self.max_char_n_gram
+
+            if self.e_type == 'tfidf':
+                self.vectorizer = CountVectorizer(ngram_range=(min_n_gram, max_n_gram),
+                                                  max_features=self.max_vocab_size, binary=False, max_df=self.max_df,
+                                                  analyzer=self.tokenizer_level)
+                self.vectorizer.fit(documents)
+            if self.e_type == 'count':
+                self.vectorizer = CountVectorizer(ngram_range=(min_n_gram, max_n_gram),
+                                                  max_features=self.max_vocab_size, binary=False, max_df=self.max_df,
+                                                  analyzer=self.tokenizer_level)
+                self.vectorizer.fit(documents)
+            if self.e_type == 'binary':
+                self.vectorizer = CountVectorizer(ngram_range=(min_n_gram, max_n_gram),
+                                                  max_features=self.max_vocab_size, binary=False, max_df=self.max_df,
+                                                  analyzer=self.tokenizer_level)
+                self.vectorizer.fit(documents)
+            with open(self.file_loc, 'wb') as f:
+                pickle.dump(self.vectorizer, f)
         if self.e_type == 'lda':
             documents_tokenized = [tokenize(i) for i in documents]
             self.common_dictionary = Dictionary(documents_tokenized)
             common_corpus = [self.common_dictionary.doc2bow(text) for text in documents_tokenized]
-            self.vectorizer = ldamodel.LdaModel(common_corpus, id2word=self.common_dictionary, num_topics=self.num_of_topics, passes=self.epochs)
+            self.vectorizer = ldamodel.LdaModel(common_corpus, id2word=self.common_dictionary,
+                                                num_topics=self.num_of_topics, passes=self.epochs)
+            self.vectorizer.save(self.file_loc)
         if self.e_type == 'doc2vec':
             tagged_documents = [TaggedDocument(tokenize(doc), [i]) for i, doc in enumerate(documents)]
             self.vectorizer = Doc2Vec(tagged_documents, vector_size=self.encoding_size, window=2, min_count=1,
-                                      workers=4, epochs=self.epochs, max_vocab_size = 100000)
+                                      workers=4, epochs=self.epochs, max_vocab_size=100000)
             self.vectorizer.delete_temporary_training_data(keep_doctags_vectors=True, keep_inference=True)
+            self.vectorizer.save(self.file_loc)
         if self.e_type == 'fasttext':
             with open('/tmp/fasttext_file', 'w') as f:
                 for i in documents:
                     f.write(clean_text(i) + '\n')
-            self.vectorizer = fasttext.train_unsupervised('/tmp/fasttext_file', model='skipgram', dim=self.encoding_size)
+            self.vectorizer = fasttext.train_unsupervised('/tmp/fasttext_file', model=self.fasttext_algorithm,
+                                                          dim=self.encoding_size)
+            self.vectorizer.save_model(self.file_loc)
 
     def transform(self, documents):
 
@@ -242,7 +273,8 @@ class TextEncoding():
             results = []
             for i in documents_clean:
                 if i:
-                    results.append(self.vectorizer[i])
+                    results.append(self.vectorizer.get_sentence_vector(i))
+                    # results.append(self.vectorizer[i])
                 else:
                     results.append(np.array([0 for _ in range(self.encoding_size)]))
 
@@ -257,8 +289,6 @@ class ModelPipeline():
 
     def __init__(self, e_type='binary',
                  max_vocab_size=1000,
-                 min_n_gram=1,
-                 max_n_gram=1,
                  max_df=.1,
                  num_of_topics=64,
                  encoding_size=64,
@@ -273,13 +303,16 @@ class ModelPipeline():
                  rf_max_depth=8,
                  rf_min_samples_split=2,
                  text_combination_method='hstack',
-                 epochs = 1,
-                 kernel = 'rbf',
-                 max_page_size =1000,
-                 text_types = None):
+                 epochs=1,
+                 kernel='rbf',
+                 max_page_size=1000,
+                 text_types=None,
+                 fasttext_algorithm='skipgram', min_word_n_gram=1, max_word_n_gram=2, min_char_n_gram=1,
+                 max_char_n_gram=2, tokenizer_level='word', pipeline_id=None):
 
         assert text_combination_method in self.valid_text_combination_methods
 
+        self.file_loc = f'{dir_loc}/text_analysis_results/models/{pipeline_id}_model'
         self.text_combination_method = text_combination_method
         self.encoding_training_time = 0
         self.pre_model_training_transformations_time = 0
@@ -288,17 +321,21 @@ class ModelPipeline():
         self.prediction_model_time = 0
         self.eval_metric = 0
         self.text_types = text_types
-        self.id = str(uuid.uuid4())
-
+        self.pipeline_id = pipeline_id
         self.text_encoding = TextEncoding(e_type=e_type,
-                                  max_vocab_size=max_vocab_size,
-                                  min_n_gram=min_n_gram,
-                                  max_n_gram=max_n_gram,
-                                  max_df=max_df,
-                                  num_of_topics=num_of_topics,
-                                  encoding_size=encoding_size,
-                                  epochs = epochs,
-                                  max_page_size =max_page_size)
+                                          max_vocab_size=max_vocab_size,
+                                          min_word_n_gram=min_word_n_gram,
+                                          max_word_n_gram=max_word_n_gram,
+                                          min_char_n_gram=min_char_n_gram,
+                                          max_char_n_gram=max_char_n_gram,
+                                          max_df=max_df,
+                                          num_of_topics=num_of_topics,
+                                          encoding_size=encoding_size,
+                                          epochs=epochs,
+                                          max_page_size=max_page_size,
+                                          fasttext_algorithm=fasttext_algorithm,
+                                          tokenizer_level=tokenizer_level,
+                                          pipeline_id=pipeline_id)
         self.text_model = TextModel(m_type=m_type,
                                     num_of_hidden_layers=num_of_hidden_layers,
                                     width_of_hidden_layers=width_of_hidden_layers,
@@ -309,7 +346,8 @@ class ModelPipeline():
                                     rf_criterion=rf_criterion,
                                     rf_max_depth=rf_max_depth,
                                     rf_min_samples_split=rf_min_samples_split,
-                                    kernel = kernel)
+                                    kernel=kernel,
+                                    pipeline_id=pipeline_id)
 
     def run_pipeline_for_query_text_association(self, df):
         '''
@@ -365,13 +403,14 @@ class ModelPipeline():
         self.eval_metric = self.text_model.evaluate(val_x_combined, df_val['target'])
 
         self.prediction_model_time = time.time() - training_time_start - self.encoding_training_time - self.pre_model_training_transformations_time - self.model_training_time - self.prediction_transformation_time
+        del self.text_encoding.vectorizer, self.text_model.model
         return {'encoding_training_time': self.encoding_training_time,
                 'pre_model_training_transformations_time': self.pre_model_training_transformations_time,
                 'model_training_time': self.model_training_time,
                 'prediction_transformation_time': self.prediction_transformation_time,
                 'prediction_model_time': self.prediction_model_time,
                 'eval_metric': self.eval_metric,
-                'id': self.id}
+                'pipeline_id': self.pipeline_id}
 
     def run_pipeline_for_text_meta_association(self, df):
         '''
@@ -389,7 +428,7 @@ class ModelPipeline():
         meta_documents_train, meta_documents_val, text_documents_train, text_documents_val, y_train, y_val = train_test_split(
             meta_documents, text_documents, target, random_state=1)
 
-        #not thorough to train vectorizer on val data but adding val data handles oov case easily.
+        # not thorough to train vectorizer on val data but adding val data handles oov case easily.
         self.text_encoding.fit(meta_documents_train + meta_documents_val + text_documents_train + text_documents_val)
         self.encoding_training_time = time.time() - training_time_start
 
@@ -434,7 +473,7 @@ class ModelPipeline():
             return x1 * x2
 
     def combine_variable_size_text_columns(self, x_list):
-        result =  x_list[0]
+        result = x_list[0]
 
         if len(x_list) > 1 and self.text_combination_method == 'hstack':
             result = np.hstack(x_list)
@@ -451,30 +490,30 @@ class ModelPipeline():
 
 def run_meta_text_association_param_search():
     params = {'e_type': ['tfidf',
-                     'count',
-                     'binary',
-                     'doc2vec',
-                     'fasttext'],
-          'm_type': ['dnn',
-                     'rf',
-                     'svm'],
-          'text_combination_method': ['hstack',
-                                             'subtraction',
-                                      'multiplication'],
-          'max_vocab_size': [i for i in range(10, 500)],
-          'max_n_gram': [1],
-          'num_of_topics': [i for i in range(4, 32)],
-          'encoding_size': [i for i in range(4, 32)],
-          'num_of_hidden_layers': [i for i in range(1, 4)],
-          'width_of_hidden_layers': [i for i in range(4, 132, 4)],
-          'batch_size': [32],
-          'rf_criterion': ['gini', 'entropy'],
-          'rf_max_depth': [i for i in range(3, 16)],
-          'rf_min_samples_split': [i for i in range(2, 10)],
-          'epochs':[i for i in range(1, 3)],
-          'kernel':['linear', 'poly', 'rbf', 'sigmoid'],
-          'max_page_size':[100, 500, 1000]
-          }
+                         'count',
+                         'binary',
+                         'doc2vec',
+                         'fasttext'],
+              'm_type': ['dnn',
+                         'rf',
+                         'svm'],
+              'text_combination_method': ['hstack',
+                                          'subtraction',
+                                          'multiplication'],
+              'max_vocab_size': [i for i in range(10, 500)],
+              'max_n_gram': [1],
+              'num_of_topics': [i for i in range(4, 32)],
+              'encoding_size': [i for i in range(4, 32)],
+              'num_of_hidden_layers': [i for i in range(1, 4)],
+              'width_of_hidden_layers': [i for i in range(4, 132, 4)],
+              'batch_size': [32],
+              'rf_criterion': ['gini', 'entropy'],
+              'rf_max_depth': [i for i in range(3, 16)],
+              'rf_min_samples_split': [i for i in range(2, 10)],
+              'epochs': [i for i in range(1, 3)],
+              'kernel': ['linear', 'poly', 'rbf', 'sigmoid'],
+              'max_page_size': [100, 500, 1000]
+              }
 
     if not os.path.exists(f'{dir_loc}/meta_text_association_results'):
         os.makedirs(f'{dir_loc}/meta_text_association_results')
@@ -511,62 +550,72 @@ def run_meta_text_association_param_search():
         results.append(next_params)
         print(f'result: {result}')
 
-        sorted_results = sorted(results, key = lambda x: x['eval_metric'], reverse=True)
+        sorted_results = sorted(results, key=lambda x: x['eval_metric'], reverse=True)
         print(sorted_results)
 
         results_df = pd.DataFrame.from_dict(results)
-        results_df.to_csv(f'{dir_loc}/text_analysis_results/text_analysis_{run_id}.csv', sep = '|', index = False)
+        results_df.to_csv(f'{dir_loc}/text_analysis_results/text_analysis_{run_id}.csv', sep='|', index=False)
 
 
 def run_meta_query_association_param_search():
-    params = {'text_types':[['meta'], ['text'], ['html'], ['meta', 'text'], ['meta', 'html'], ['text', 'html'], ['meta', 'text', 'html']],
+    params = {'text_types': [['html']],
+            # 'text_types': [['meta'], ['text'], ['html'], ['meta', 'text'], ['meta', 'html'], ['text', 'html'],
+            #                  ['meta', 'text', 'html']],
               'e_type': ['tfidf',
-                     'count',
-                     'binary',
-                     'fasttext',
-                     'doc2vec'],
-          'm_type': ['dnn',
-                     'rf'],
-          'text_combination_method': ['hstack', 'addition', 'multiplication', 'subtraction'],
-          'max_vocab_size': [i for i in range(10, 1200)],
-          'max_n_gram': [1, 2, 3],
-          'num_of_topics': [i for i in range(4, 128)],
-          'encoding_size': [i for i in range(4, 128)],
-          'num_of_hidden_layers': [i for i in range(1, 4)],
-          'width_of_hidden_layers': [i for i in range(4, 132, 4)],
-          'batch_size': [32],
-          'rf_criterion': ['gini', 'entropy'],
-          'rf_max_depth': [i for i in range(3, 16)],
-          'rf_min_samples_split': [i for i in range(2, 10)],
-          'epochs':[i for i in range(1, 3)],
-          'kernel':['linear', 'poly', 'rbf', 'sigmoid'],
-          'max_page_size':[100, 500, 1000]
-          }
+                         'count',
+                         'binary',
+                         'fasttext',
+                         'doc2vec'],
+              'm_type': ['dnn',
+                         'rf',
+                         'svm',
+                         'lr',
+                         'elasticnet'],
+              'text_combination_method': ['hstack', 'addition', 'multiplication', 'subtraction'],
+              'max_vocab_size': [i for i in range(10, 2000)],
+              'min_word_n_gram': [1],
+              'max_word_n_gram': [1, 2],
+              'min_char_n_gram': [1],
+              'max_char_n_gram': [1, 2, 3],
+              'num_of_topics': [i for i in range(4, 128)],
+              'encoding_size': [i for i in range(4, 128)],
+              'num_of_hidden_layers': [i for i in range(1, 4)],
+              'width_of_hidden_layers': [i for i in range(4, 132, 4)],
+              'batch_size': [32],
+              'rf_criterion': ['gini', 'entropy'],
+              'rf_max_depth': [i for i in range(3, 16)],
+              'rf_min_samples_split': [i for i in range(2, 10)],
+              'epochs': [i for i in range(1, 5)],
+              'kernel': ['linear', 'poly', 'rbf', 'sigmoid'],
+              'max_page_size': [100, 500, 1000, 5000, 10000],
+              'fasttext_algorithm': ['skipgram', 'cbow'],
+              'tokenizer_level': ['word', 'char']
+              }
 
     if not os.path.exists(f'{dir_loc}/text_query_analysis_results'):
         os.makedirs(f'{dir_loc}/text_query_analysis_results')
 
     dm = DataManager()
-    df = dm.get_query_dataset(max_dataset_size = 10000, balance = True, text_types = ('text', 'meta', 'html'))
-    print(df.describe())
+    df = dm.get_query_dataset(max_dataset_size=50000, balance=True, text_types=('html',))
+    print(f'dataset shape: {df.shape}')
 
     num_of_param_searches = 10000
     results = []
-
     run_id = str(uuid.uuid4())
 
     for _ in range(num_of_param_searches):
+        pipeline_id = str(uuid.uuid4())
         next_params = dict()
         for p in params:
             next_params[p] = random.choice(params[p])
-        next_params['text_combination_method'] = 'hstack'
+        next_params['pipeline_id'] = pipeline_id
 
         print()
         print(f'Next set of params: {next_params}')
         pipeline = ModelPipeline(**next_params)
         result = pipeline.run_pipeline_for_query_text_association(df)
 
-        file_loc = f'text_analysis_results/pickled_pipelines/{run_id}_{pipeline.id}'
+        file_loc = f'text_analysis_results/pickled_pipelines/{run_id}_{pipeline_id}'
         result['file_loc'] = file_loc
         with open(f'{dir_loc}/{file_loc}', 'wb') as f:
             pickle.dump(pipeline, f)
@@ -577,18 +626,12 @@ def run_meta_query_association_param_search():
         results.append(next_params)
         print(f'result: {result}')
 
-        sorted_results = sorted(results, key = lambda x: x['eval_metric'], reverse=True)
+        sorted_results = sorted(results, key=lambda x: x['eval_metric'], reverse=True)
         print(sorted_results)
 
         results_df = pd.DataFrame.from_dict(results)
-        results_df.to_csv(f'{dir_loc}/text_analysis_results/query_text_analysis_{run_id}.csv', sep = '|', index = False)
-
-
-
-
+        results_df.to_csv(f'{dir_loc}/text_analysis_results/result_metrics/query_text_analysis_{run_id}.csv', sep='|', index=False)
 
 
 if __name__ == '__main__':
     run_meta_query_association_param_search()
-
-
