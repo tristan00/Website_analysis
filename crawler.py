@@ -19,9 +19,9 @@ from common import (dir_loc, db_name,
                     get_initial_website_list,
                     sep_char,
                     max_websites_per_file,
-                    run_page_rank)
-from website_text_extraction import (get_meta_info_from_html,
-                                     get_text_from_html)
+                    run_page_rank,
+                    get_meta_info_from_html,
+                    get_text_from_html)
 import multiprocessing
 import hashlib
 import datetime
@@ -86,15 +86,8 @@ def scrape_url(url, file_name):
     except (socket.timeout,
             requests.RequestException,
             TimeoutError,
-            # requests.exceptions.ConnectionError,
-            # requests.exceptions.InvalidSchema,
-            # requests.exceptions.MissingSchema,
-            # requests.exceptions.ReadTimeout,
             ValueError,
-            # requests.exceptions.TooManyRedirects,
-            # requests.exceptions.ChunkedEncodingError,
             TypeError,
-            # requests.exceptions.ContentDecodingError
             ):
         pass
     except Exception:
@@ -108,23 +101,17 @@ def scrape_url(url, file_name):
 def process_urls(q):
     process = multiprocessing.current_process()
     pid = process.pid
-    file_name = ''
 
-    counter = 0
+    hashGen = hashlib.sha512()
+    hashGen.update(f"{pid}{time.time()}".encode('utf-8'))
+    file_name = hashGen.hexdigest()
+    with open(f'{dir_loc}/all_html_chunks/{file_name}.txt', 'w') as f:
+        f.write(f'url{sep_char}data' + "\n")
+    with open(f'{dir_loc}/all_text_chunks/{file_name}.txt', 'w') as f:
+        f.write(f'url{sep_char}data' + "\n")
+    with open(f'{dir_loc}/all_meta_chunks/{file_name}.txt', 'w') as f:
+        f.write(f'url{sep_char}data' + "\n")
     while True:
-
-        if counter % max_websites_per_file == 0:
-            hashGen = hashlib.sha512()
-            hashGen.update(f"{pid}{time.time()}".encode('utf-8'))
-            file_name = hashGen.hexdigest()
-
-            with open(f'{dir_loc}/all_html_chunks/{file_name}.txt', 'w') as f:
-                f.write(f'url{sep_char}data' + "\n")
-            with open(f'{dir_loc}/all_text_chunks/{file_name}.txt', 'w') as f:
-                f.write(f'url{sep_char}data' + "\n")
-            with open(f'{dir_loc}/all_meta_chunks/{file_name}.txt', 'w') as f:
-                f.write(f'url{sep_char}data' + "\n")
-
         url = q.get()
 
         if url:
@@ -132,7 +119,7 @@ def process_urls(q):
         else:
             break
 
-        counter += 1
+
 
 
 class Crawler():
@@ -143,7 +130,7 @@ class Crawler():
                  max_website_len=500000,
                  verbose=False,
                  num_of_processes=4,
-                 max_average_time_per_website=1.0):
+                 max_average_time_per_website=4.0):
         self.website_queue_counter = 0
         self.max_average_time_per_website = max_average_time_per_website
         self.num_of_processes = num_of_processes
@@ -316,12 +303,23 @@ class Crawler():
 
 
 if __name__ == '__main__':
-    c = Crawler(num_of_processes=16)
-    # initial_sites = get_initial_website_list()
-    # initial_sites_sample = random.sample(initial_sites, k=10000)
-    # c.scrape_list(initial_sites_sample)
+    crawler = Crawler(num_of_processes=16)
+    initial_sites = list(set(get_initial_website_list()))
+    random.shuffle(initial_sites)
 
-    while True:
+    num_of_chunks = 100
+    chunks = [set() for _ in range(num_of_chunks)]
 
-        c.crawl(num_of_batches=1, batch_size=100000, page_rank=True, num_page_rank_iterations=random.randint(2, 10))
-        c.crawl(num_of_batches=1, batch_size=100000, page_rank=False)
+    for c, i in enumerate(initial_sites):
+        chunks[c%num_of_chunks].add(i)
+
+    for i in chunks:
+        crawler.scrape_list(i)
+
+
+    # while True:
+    #     # c.crawl(num_of_batches=1, batch_size=1000000, page_rank=True, num_page_rank_iterations=3)
+    #     initial_sites_sample = random.sample(initial_sites, k=10000)
+    #     c.scrape_list(initial_sites_sample)
+    #     # c.crawl(num_of_batches=1, batch_size=100000, page_rank=False)
+    #
