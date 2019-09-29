@@ -7,7 +7,7 @@
       <change beforePath="$PROJECT_DIR$/crawler.py" beforeDir="false" afterPath="$PROJECT_DIR$/crawler.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/scratch.py" beforeDir="false" afterPath="$PROJECT_DIR$/scratch.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/simple_search_engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/simple_search_engine.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/text_analysis.py" beforeDir="false" afterPath="$PROJECT_DIR$/text_analysis.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/text_analysis.py" beforeDir="false" afterPath="$PROJECT_DIR$/text_methods.py" afterDir="false" />
     </list>
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
     <option name="SHOW_DIALOG" value="false" />
@@ -43,7 +43,7 @@
       </list>
     </option>
   </component>
-  <component name="RunManager" selected="Python.raw_scraper">
+  <component name="RunManager" selected="Python.simple_search_engine">
     <configuration name="common" type="PythonConfigurationType" factoryName="Python" temporary="true">
       <module name="Website_analysis" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -140,7 +140,7 @@
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/text_analysis.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/text_methods.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -151,11 +151,11 @@
     </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.simple_search_engine" />
+        <item itemvalue="Python.text_analysis" />
+        <item itemvalue="Python.scratch" />
         <item itemvalue="Python.raw_scraper" />
         <item itemvalue="Python.common" />
-        <item itemvalue="Python.text_analysis" />
-        <item itemvalue="Python.simple_search_engine" />
-        <item itemvalue="Python.scratch" />
       </list>
     </recent_temporary>
   </component>
@@ -190,33 +190,38 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/crawler.py</url>
-          <line>267</line>
+          <line>273</line>
           <option name="timeStamp" value="62" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/crawler.py</url>
-          <line>214</line>
+          <line>220</line>
           <option name="timeStamp" value="64" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/crawler.py</url>
-          <line>157</line>
+          <line>163</line>
           <option name="timeStamp" value="75" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/text_analysis.py</url>
-          <line>439</line>
+          <url>file://$PROJECT_DIR$/text_methods.py</url>
+          <line>436</line>
           <option name="timeStamp" value="92" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/common.py</url>
-          <line>557</line>
+          <line>551</line>
           <option name="timeStamp" value="98" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/text_analysis.py</url>
+          <url>file://$PROJECT_DIR$/text_methods.py</url>
           <line>389</line>
           <option name="timeStamp" value="106" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/simple_search_engine.py</url>
+          <line>163</line>
+          <option name="timeStamp" value="118" />
         </line-breakpoint>
       </breakpoints>
     </breakpoint-manager>

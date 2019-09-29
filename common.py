@@ -17,13 +17,13 @@ import time
 from bs4.element import Comment
 import functools
 import operator
+from shutil import copyfile
+from gensim.models.doc2vec import Doc2Vec, TaggedDocument
+import fasttext
 
 
-# dir_loc = '/home/td/Documents/web_data'
 dir_loc = '/media/td/Samsung_T5/web_data'
-# dir_loc = 'E:/web_data'
 num_of_file_chunks = 1024
-# dir_loc = '/home/td/Documents/data/website_data'
 url_record_file_name = 'links.pkl'
 url_record_backup_file_name = 'links_backup.pkl'
 db_name = 'website.db'
@@ -39,7 +39,7 @@ class DataManager():
     def __init__(self,
                  min_html_word_len = 100,
                  min_text_word_len = 25,
-                 min_meta_word_len = 5):
+                 min_meta_word_len = 10):
 
         self.min_char_dict = {'text': min_text_word_len,
                               'html':min_html_word_len,
@@ -58,16 +58,9 @@ class DataManager():
         else:
             sample_urls = self.urls
 
-        files = set()
         output = list()
-
         print('identifying files')
-        for url in tqdm.tqdm(sample_urls):
-            timestamps = list(self.url_index[url].keys())
-            if not timestamps:
-                continue
-            timestamp = random.choice(timestamps)
-            files.add(self.url_index[url][timestamp])
+        files = self.get_files_of_url_set(sample_urls)
 
         meta_records = dict()
         text_records = dict()
@@ -101,15 +94,10 @@ class DataManager():
 
         random.shuffle(sample_urls_1)
         random.shuffle(sample_urls_2)
-
-        files = set()
         output = list()
 
         print('identifying files')
-        for url in tqdm.tqdm(set(sample_urls_1) | set(sample_urls_2)):
-            timestamps = list(self.url_index[url].keys())
-            timestamp = random.choice(timestamps)
-            files.add(self.url_index[url][timestamp])
+        files = self.get_files_of_url_set(set(sample_urls_1) | set(sample_urls_2))
 
         meta_records = dict()
         text_records = dict()
@@ -148,19 +136,16 @@ class DataManager():
             df[text_type] = df[text_type].fillna('')
         return df
 
-
     def get_dataset_of_aol_search_query_matching_text_of_clicked_link(self, max_dataset_size = 10000, text_types = ('text', )):
-        files = set()
         sample_urls = self.sample_urls_from_url_set(set(self.query_dataset['ClickURL']), max_dataset_size)
         sample_df = self.query_dataset[self.query_dataset['ClickURL'].isin(sample_urls)]
+        output_dicts = []
+        for _, v in sample_df.iterrows():
+            output_dicts.append({'query':v['Query'],
+                                 'target':1,
+                                 'url':v['ClickURL']})
 
-        for url in tqdm.tqdm(sample_urls):
-            if url in self.url_index:
-                timestamps = list(self.url_index[url].keys())
-                if not timestamps:
-                    continue
-                timestamp = random.choice(timestamps)
-                files.add(self.url_index[url][timestamp])
+        files = self.get_files_of_url_set(sample_urls)
 
         records = dict()
         print('reading data from data files')
@@ -173,36 +158,32 @@ class DataManager():
                 except:
                     traceback.print_exc()
 
-        output_dicts = []
-        for k, v in sample_df.iterrows():
-            output_dict = dict()
+        output_dicts_filtered = []
+        for output_dict in output_dicts:
             matched_text_data = False
             for text_type in text_types:
-                output_dict[text_type] = records[text_type].get(v['ClickURL'])
+                output_dict[text_type] = records[text_type].get(output_dict['url'])
                 if output_dict[text_type]:
                     matched_text_data = True
             if matched_text_data:
-                output_dict['query'] = v['Query']
-                output_dict['target'] = 1
-                output_dicts.append(output_dict)
-        if len(output_dicts) > max_dataset_size:
+                output_dicts_filtered.append(output_dict)
+        if len(output_dicts_filtered) > max_dataset_size:
             output_dicts = random.sample(output_dicts, max_dataset_size)
 
         return pd.DataFrame.from_dict(output_dicts)
 
     def get_dataset_of_aol_search_query_not_matching_text_of_clicked_link(self, max_dataset_size = None, text_types = ('text', )):
         sample_urls = self.sample_urls_from_url_set(set(self.query_dataset['ClickURL']), max_dataset_size)
-        sample_df = self.query_dataset[self.query_dataset['ClickURL'].isin(sample_urls)]
-        mismatch_sample_urls = self.sample_urls(max_dataset_size)
+        sample_urls_2 = self.sample_urls_from_url_set(set(self.query_dataset['ClickURL']), max_dataset_size)
 
-        files = set()
-        for url in tqdm.tqdm(mismatch_sample_urls):
-            if url in self.url_index:
-                timestamps = list(self.url_index[url].keys())
-                if not timestamps:
-                    continue
-                timestamp = random.choice(timestamps)
-                files.add(self.url_index[url][timestamp])
+        sample_df = self.query_dataset[self.query_dataset['ClickURL'].isin(sample_urls)]
+        output_dicts = []
+        for _, v in sample_df.iterrows():
+            output_dicts.append({'query':v['Query'],
+                                 'target':0,
+                                 'url':v['ClickURL']})
+
+        files = self.get_files_of_url_set(sample_urls_2)
 
         records = dict()
         print('reading data from data files')
@@ -210,24 +191,21 @@ class DataManager():
             print(f'reading data from {text_type} files')
             records[text_type] = dict()
             for f in tqdm.tqdm(files):
-                records[text_type].update(self.get_records_from_file(text_type, set(mismatch_sample_urls), f))
+                try:
+                    records[text_type].update(self.get_records_from_file(text_type, set(sample_urls), f))
+                except:
+                    traceback.print_exc()
 
-        output_dicts = []
-        for k, v in sample_df.iterrows():
-            incorrect_url = random.choice(list(records[random.choice(text_types)].keys()))
-
-            output_dict = dict()
+        output_dicts_filtered = []
+        for output_dict in output_dicts:
             matched_text_data = False
             for text_type in text_types:
-                output_dict[text_type] = records[text_type].get(incorrect_url)
+                output_dict[text_type] = records[text_type].get(random.choice(sample_urls_2))
                 if output_dict[text_type]:
                     matched_text_data = True
             if matched_text_data:
-                output_dict['query'] = v['Query']
-                output_dict['target'] = 0
-                output_dicts.append(output_dict)
-
-        if len(output_dicts) > max_dataset_size:
+                output_dicts_filtered.append(output_dict)
+        if len(output_dicts_filtered) > max_dataset_size:
             output_dicts = random.sample(output_dicts, max_dataset_size)
 
         return pd.DataFrame.from_dict(output_dicts)
@@ -242,7 +220,7 @@ class DataManager():
             next_url_dict = dict()
             next_urls_set = set()
             for r_type in r_types:
-                next_url_type_data = self.get_records_from_file(r_type, self.urls, f)
+                next_url_type_data = self.get_records_from_file(r_type, self.file_name_dict[f], f)
                 next_url_dict[r_type] = next_url_type_data
                 next_urls_set.update(set(next_url_type_data.keys()))
 
@@ -328,7 +306,7 @@ class DataManager():
             return list(sample_urls)
 
     def load_url_file_indices(self):
-
+        # copyfile('{dir}/dbs/{db_name}'.format(dir=dir_loc, db_name=db_name), '{dir}/dbs/{db_name}'.format(dir=dir_loc, db_name=db_name2))
         self.file_name_dict = dict()
         query = '''Select url, request_timestamp, file_name from websites where html_word_len > ? and text_word_len > ? and meta_word_len > ?'''
         with sqlite3.connect('{dir}/dbs/{db_name}'.format(dir=dir_loc, db_name=db_name)) as conn_disk:
@@ -343,6 +321,22 @@ class DataManager():
         self.urls = list(self.url_index)
         print(f'num of valid scraped websites in db: {len(self.urls)}')
         del res
+
+    def get_files_of_url_set(self, url_set):
+        files = set()
+        for url in tqdm.tqdm(url_set):
+            if url in self.url_index:
+                timestamps = list(self.url_index[url].keys())
+                if not timestamps:
+                    continue
+
+                for t in timestamps:
+                    if self.url_index[url][t] in files:
+                        break
+                else:
+                    timestamp = random.choice(timestamps)
+                    files.add(self.url_index[url][timestamp])
+        return files
 
 
 def run_page_rank(n=None, num_of_iterations=1):
@@ -559,11 +553,12 @@ def load_aol_dataset():
     print(df.shape)
     df = df.drop_duplicates(subset = ['ClickURL', 'Query'])
     print(df.shape)
-    df.to_csv(f'{dir_loc}/aol_dataset_consolidated.csv', index = False, sep = '|')
+    df.to_csv(f'{dir_loc}/external_data/aol_dataset_consolidated.csv', index = False, sep = '|')
 
 if __name__ == '__main__':
     dm = DataManager()
-    df = dm.get_query_dataset(max_dataset_size = 1000, balance = True, text_types = ('text', 'meta', 'html'))
+    df = dm.get_query_dataset(max_dataset_size = 10000, balance = True, text_types = ('text', 'meta', 'html'))
     print(df.columns.tolist())
     print(df['target'].mean())
+    print(df.shape)
 

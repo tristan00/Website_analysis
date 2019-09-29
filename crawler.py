@@ -72,8 +72,14 @@ def process_html(r_text, r_time, url, timestamp, file_name):
         record_df = pd.DataFrame.from_dict([record])
         record_df = record_df.set_index('url')
 
-        with sqlite3.connect(f'{dir_loc}/dbs/{db_name}') as conn_disk:
-            record_df.to_sql('websites', conn_disk, if_exists='append', index=True)
+        while True:
+            try:
+                with sqlite3.connect(f'{dir_loc}/dbs/{db_name}') as conn_disk:
+                    record_df.to_sql('websites', conn_disk, if_exists='append', index=True)
+                break
+            except sqlite3.OperationalError:
+                time.sleep(5)
+                print('db locked')
 
 
 def scrape_url(url, file_name):
@@ -137,8 +143,8 @@ class Crawler():
                  verbose=False,
                  num_of_processes=4,
                  max_average_time_per_website=4.0,
-                 pool_time_limit_minimum = 60.0):
-        self.pool_time_limit_minimum = pool_time_limit_minimum
+                 pool_time_limit_base = 10.0):
+        self.pool_time_limit_base = pool_time_limit_base
         self.website_queue_counter = 0
         self.max_average_time_per_website = max_average_time_per_website
         self.num_of_processes = num_of_processes
@@ -254,7 +260,7 @@ class Crawler():
     def refresh_pool_and_queue(self):
         [self.q.put(None) for _ in range(self.num_of_processes)]
         # [p.join() for p in self.pool]
-        timeout = self.pool_time_limit_minimum + ((self.max_average_time_per_website * self.website_queue_counter) / len(self.pool))
+        timeout = self.pool_time_limit_base + ((self.max_average_time_per_website * self.website_queue_counter) / len(self.pool))
         start = time.time()
         formatted_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
@@ -317,11 +323,11 @@ def wipe_db():
 if __name__ == '__main__':
     # wipe_db()
 
-    crawler = Crawler(num_of_processes=32)
+    crawler = Crawler(num_of_processes=16)
     initial_sites = list(set(get_initial_website_list()))
     random.shuffle(initial_sites)
 
-    num_of_chunks = 400
+    num_of_chunks = 4000
     chunks = [set() for _ in range(num_of_chunks)]
 
     for counter, i in enumerate(initial_sites):
@@ -330,9 +336,8 @@ if __name__ == '__main__':
     start_time = time.time()
     for counter, i in enumerate(chunks):
         crawler.scrape_list(i)
-        print(f'iteration: {counter}, time: {time.time() - start_time}, average time per chunk: {(time.time() - start_time)/max(1, counter)}')
+        print(f'iteration: {counter}, time: {time.time() - start_time}, average time per chunk: {(time.time() - start_time)/(counter + 1)}')
 
     while True:
-        crawler.crawl(num_of_batches=1, batch_size=100000, page_rank=True, num_page_rank_iterations=3)
-        crawler.crawl(num_of_batches=1, batch_size=100000, page_rank=False)
-
+        crawler.crawl(num_of_batches=1, batch_size=10000, page_rank=True, num_page_rank_iterations=3)
+        crawler.crawl(num_of_batches=1, batch_size=10000, page_rank=False)
