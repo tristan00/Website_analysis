@@ -100,7 +100,6 @@ class SimpleSearchEngine():
 
     def train(self, n):
         df = self.dm.get_query_dataset(max_dataset_size=n, balance=True, text_types=self.text_types)
-        print(f'train df shape: {df.shape}')
         df['query'] = df['query'].apply(clean_text)
         self.fit_text_vectorizers(df)
         vectorized_texts = self.transform_df_with_text_vectorizers(df)
@@ -110,18 +109,12 @@ class SimpleSearchEngine():
         df_train, df_val = train_test_split(df)
 
         x_train = self.transform_df_with_text_vectorizers(df_train)
-        print(1, 1, len(x_train))
         x_train = self.pipeline_1.transform(x_train)
-        print(2, 1, x_train.shape)
         x_train = self.pipeline_2.transform([x_train])
-        print(3, 1, x_train.shape)
 
         x_val = self.transform_df_with_text_vectorizers(df_val)
-        print(1, 2, len(x_val))
         x_val = self.pipeline_1.transform(x_val)
-        print(2, 2, x_val.shape)
         x_val = self.pipeline_2.transform([x_val])
-        print(3, 2, x_val.shape)
 
         y_train = df_train['target']
         y_val = df_val['target']
@@ -195,7 +188,7 @@ def load_engine(loc):
 
 def test_params():
     data_manager = DataManager()
-    training_size = 50000
+    training_size = 10000
 
     results = []
     run_id = str(uuid.uuid4())

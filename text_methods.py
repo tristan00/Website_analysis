@@ -87,7 +87,6 @@ class Model():
         self.metric = None
 
     def fit(self, x_train, x_val, y_train, y_val):
-        print('Model fit', x_train.shape, x_val.shape, y_train.shape, y_val.shape)
 
         if self.model_type == 'dnn':
 
@@ -144,7 +143,6 @@ class Model():
             preds = self.model.predict(x)[:,1]
         else:
             preds = self.model.predict(x)
-        print(f'model prediction shape: {preds.shape}')
         return preds
 
     def evaluate(self, x_val, y_val):
@@ -294,7 +292,6 @@ class Pipeline():
         if self.text_combination_method == 'pca':
             result = self.pca.transform(np.hstack(x_list))
 
-        print('combine_variable_size_text_columns', [i.shape for i in x_list], result.shape)
         return result
 
     def fit(self, x_list):
