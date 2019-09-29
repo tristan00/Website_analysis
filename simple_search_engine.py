@@ -51,10 +51,9 @@ class SimpleSearchEngine():
                  fasttext_algorithm,
                  tokenizer_level,
                  max_df,
-                 use_pca,
-                 dm):
+                 use_pca
+                 ):
 
-        self.dm = dm
         self.engine_id = str(uuid.uuid4())
 
         self.text_types = text_types
@@ -98,15 +97,15 @@ class SimpleSearchEngine():
         self.index_size = None
 
 
-    def train(self, n):
-        df = self.dm.get_query_dataset(max_dataset_size=n, balance=True, text_types=self.text_types)
+    def train(self, df):
         df['query'] = df['query'].apply(clean_text)
         self.fit_text_vectorizers(df)
         vectorized_texts = self.transform_df_with_text_vectorizers(df)
-        self.pipeline_1.fit(vectorized_texts)
-        self.pipeline_2.fit(self.pipeline_1.transform(vectorized_texts))
+        self.pipeline_1.fit(vectorized_texts, 1)
+        p1_output = self.pipeline_1.transform(vectorized_texts)
+        self.pipeline_2.fit(p1_output, p1_output.shape[1])
 
-        df_train, df_val = train_test_split(df)
+        df_train, df_val = train_test_split(df, random_state=1)
 
         x_train = self.transform_df_with_text_vectorizers(df_train)
         x_train = self.pipeline_1.transform(x_train)
@@ -123,9 +122,7 @@ class SimpleSearchEngine():
         print(f'Model accuracy score: {self.model.metric}')
 
 
-    def index_websites(self, n = None):
-        gen = self.dm.data_generator(self.text_types, n)
-
+    def index_websites(self, gen):
         encoded_inputs = []
         for i in gen:
             encoded_inputs.append(i)
@@ -174,7 +171,7 @@ class SimpleSearchEngine():
 
 
 def save_engine(engine, loc):
-    del engine.model, engine.vectorizer, engine.dm
+
     with open(loc, 'wb') as f:
         pickle.dump(engine, f)
 
@@ -182,13 +179,14 @@ def save_engine(engine, loc):
 def load_engine(loc):
     with open(loc, 'rb') as f:
         engine = pickle.load(f)
-    engine.dm = DataManager()
     return engine
 
 
 def test_params():
     data_manager = DataManager()
-    training_size = 10000
+    training_size = 50000
+
+    df = data_manager.get_query_dataset(max_dataset_size=training_size, balance=True, text_types=['html', 'text', 'meta'])
 
     results = []
     run_id = str(uuid.uuid4())
@@ -196,15 +194,11 @@ def test_params():
     while True:
         next_params = get_random_param_grid()
         print(f'next_params: {next_params}')
-
-        next_params['dm'] = data_manager
-
         s = SimpleSearchEngine(**next_params)
-        s.train(training_size)
+        s.train(df)
         next_params['accuracy'] = s.model.metric
         next_params['engine_id'] = s.engine_id
         next_params['training_size'] = training_size
-        next_params['dm'] = 0
         print(f'next_params: {next_params}')
 
         results.append(next_params)

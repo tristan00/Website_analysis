@@ -282,6 +282,7 @@ class Pipeline():
     def __init__(self, text_combination_method, pca_components):
         self.text_combination_method = text_combination_method
         self.pca = PCA(n_components=pca_components)
+        self.n_components = pca_components
 
 
     def transform(self, x_list):
@@ -294,8 +295,11 @@ class Pipeline():
 
         return result
 
-    def fit(self, x_list):
-        if len(x_list) > 1 and self.text_combination_method == 'pca':
+    def fit(self, x_list, size):
+        if self.n_components >= size:
+            self.pca = PCA(n_components=size - 1)
+
+        if  self.text_combination_method == 'pca':
             self.pca.fit(x_list)
 
 
@@ -318,11 +322,11 @@ def get_random_param_grid():
                              'lr',
                              'elasticnet'],
                     'text_combination_method':['hstack'],
-                    'pca_components':list(range(4, 12)),
+                    'pca_components':list(range(4, 100)),
         'use_pca':[True, False],
-                  'max_vocab_size': list(range(100, 2000)),
-                  'min_n_gram': [1],
-                  'max_n_gram': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                  'max_vocab_size': list(range(100, 1000)),
+                  'min_n_gram': [1, 2],
+                  'max_n_gram': [2, 3, 4, 5, 6, 7, 8, 9, 10],
                   'num_of_topics': list(range(32, 128)),
                   'encoding_size': list(range(32, 256)),
                   'num_of_hidden_layers': list(range(1, 4)),

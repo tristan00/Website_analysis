@@ -3,11 +3,8 @@
   <component name="ChangeListManager">
     <list default="true" id="a8fa4f00-092c-4187-81b4-72db97b974f0" name="Default Changelist" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/common.py" beforeDir="false" afterPath="$PROJECT_DIR$/common.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/crawler.py" beforeDir="false" afterPath="$PROJECT_DIR$/crawler.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scratch.py" beforeDir="false" afterPath="$PROJECT_DIR$/scratch.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/simple_search_engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/simple_search_engine.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/text_analysis.py" beforeDir="false" afterPath="$PROJECT_DIR$/text_methods.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/text_methods.py" beforeDir="false" afterPath="$PROJECT_DIR$/text_methods.py" afterDir="false" />
     </list>
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
     <option name="SHOW_DIALOG" value="false" />
@@ -220,7 +217,7 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/simple_search_engine.py</url>
-          <line>163</line>
+          <line>153</line>
           <option name="timeStamp" value="118" />
         </line-breakpoint>
       </breakpoints>
